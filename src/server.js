@@ -6,16 +6,16 @@
 import express from 'express';
 import cors from 'cors';
 
-import { ensureAccountsPersist, startAutoRefresh } from './account-manager.js';
-import { ensureAccountsPersist as ensureClaudeAccountsPersist, startAutoRefresh as startClaudeAutoRefresh } from './claude-account-manager.js';
-import { ensureAccountsPersist as ensureAntigravityAccountsPersist, startAutoRefresh as startAntigravityAutoRefresh } from './antigravity-account-manager.js';
+import { ensureAccountsPersist, startAutoRefresh, stopAutoRefresh } from './account-manager.js';
+import { ensureAccountsPersist as ensureClaudeAccountsPersist, startAutoRefresh as startClaudeAutoRefresh, stopAutoRefresh as stopClaudeAutoRefresh } from './claude-account-manager.js';
+import { ensureAccountsPersist as ensureAntigravityAccountsPersist, startAutoRefresh as startAntigravityAutoRefresh, stopAutoRefresh as stopAntigravityAutoRefresh } from './antigravity-account-manager.js';
 import { registerApiRoutes } from './routes/api-routes.js';
 import { handleResponses } from './routes/responses-route.js';
 import { handleChatUpload } from './routes/chat-uploads-route.js';
 import { handleTranscribe, handleTranscribeCapabilities } from './routes/chat-transcribe-route.js';
 import { setRequestLoggingEnabled } from './request-logger.js';
 import { getServerSettings } from './server-settings.js';
-import { startModelDiscovery } from './model-discovery.js';
+import { startModelDiscovery, stopModelDiscovery } from './model-discovery.js';
 import agentChannelManager from './agent-channels/manager.js';
 import chatUiRuntimeObserver from './chat-ui/runtime-observer.js';
 import assistantConsolidator from './assistant-core/consolidator.js';
@@ -23,6 +23,7 @@ import localScheduler from './assistant-core/local-scheduler.js';
 import assistantRunStore from './assistant-core/run-store.js';
 import desktopAgentService from './desktop-agent/service.js';
 import mcpConnectionManager from './mcp/index.js';
+import { startQuotaMonitor, stopQuotaMonitor } from './quota/quota-service.js';
 
 export function createServer({ port }) {
   ensureAccountsPersist();
@@ -34,6 +35,7 @@ export function createServer({ port }) {
 
   ensureAntigravityAccountsPersist();
   startAntigravityAutoRefresh();
+  startQuotaMonitor();
 
   // Sync request logging state from persisted settings
   const settings = getServerSettings();
@@ -179,6 +181,11 @@ export function startServer({ port }) {
   const app = createServer({ port });
   const server = app.listen(port);
   server.on('close', () => {
+    stopAutoRefresh();
+    stopClaudeAutoRefresh();
+    stopAntigravityAutoRefresh();
+    stopModelDiscovery();
+    stopQuotaMonitor();
     desktopAgentService.stop().catch(() => {});
     agentChannelManager.stop().catch(() => {});
     chatUiRuntimeObserver.stop();

@@ -39,6 +39,8 @@ import {
 import { shouldInjectEndTurnFalse, maybeInjectFromLocals } from '../utils/codex-compaction-tracker.js';
 import { fetchWithTransientRetry } from '../utils/transient-error.js';
 import { logEveryNSeconds } from '../utils/log-sampler.js';
+import { estimateCostWithRegistry } from '../pricing-registry.js';
+import { createCodexUsageCollector, extractCodexUsage } from '../quota/codex-usage-collector.js';
 
 // Codex CLI fires these polling endpoints on a short interval (plugins
 // inventory, telemetry, "wham" apps). Forwarding them is fine, but logging
@@ -726,6 +728,7 @@ async function _handleCodexViaAssignedAccount(req, res, body, modelId, isStreami
         });
         if (!upstreamResponse.ok) return false;
 
+        let usage = null;
         if (isStreaming) {
             res.setHeader('Content-Type', 'text/event-stream');
             res.setHeader('Cache-Control', 'no-cache');
@@ -733,21 +736,29 @@ async function _handleCodexViaAssignedAccount(req, res, body, modelId, isStreami
             res.setHeader('X-Accel-Buffering', 'no');
             res.flushHeaders();
             const reader = upstreamResponse.body.getReader();
+            const usageCollector = createCodexUsageCollector();
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
+                usageCollector.push(value);
                 res.write(value);
             }
+            usage = usageCollector.finish();
             res.end();
         } else {
             const responseBody = await upstreamResponse.text();
+            try { usage = extractCodexUsage(JSON.parse(responseBody)); } catch { usage = null; }
             res.setHeader('Content-Type', 'application/json');
             res.send(responseBody);
         }
 
         const duration = Date.now() - startTime;
-        recordRequest({ provider: 'chatgpt-pool', keyId: creds.email, model: modelId, durationMs: duration, success: true });
-        logRequest({ route: '/backend-api/codex/responses', method: 'POST', provider: 'chatgpt-pool', keyId: creds.email, model: modelId, durationMs: duration, status: 200, success: true });
+        const inputTokens = usage?.inputTokens || 0;
+        const outputTokens = usage?.outputTokens || 0;
+        const cacheReadTokens = usage?.cacheReadTokens || 0;
+        const cost = estimateCostWithRegistry('openai', modelId, inputTokens, outputTokens, cacheReadTokens);
+        recordRequest({ provider: 'chatgpt-pool', keyId: creds.email, model: modelId, inputTokens, outputTokens, cacheReadTokens, cost, durationMs: duration, success: true });
+        logRequest({ route: '/backend-api/codex/responses', method: 'POST', provider: 'chatgpt-pool', keyId: creds.email, model: modelId, inputTokens, outputTokens, cost, durationMs: duration, status: 200, success: true });
         logger.success(`[Codex] <<< Assigned account OK | account=${creds.email} | model=${modelId} | ${duration}ms`);
         return true;
     } catch (error) {
@@ -1319,6 +1330,7 @@ async function _handleCodexViaAccountPool(req, res, body, rawBody, modelId, isSt
             rotator.notifySuccess(account, modelId);
             copyAllowedResponseHeaders(upstreamResponse, res);
 
+            let usage = null;
             if (isStreaming) {
                 res.setHeader('Content-Type', 'text/event-stream');
                 res.setHeader('Cache-Control', 'no-cache');
@@ -1327,12 +1339,15 @@ async function _handleCodexViaAccountPool(req, res, body, rawBody, modelId, isSt
                 res.flushHeaders();
 
                 const reader = upstreamResponse.body.getReader();
+                const usageCollector = createCodexUsageCollector();
                 try {
                     while (true) {
                         const { done, value } = await reader.read();
                         if (done) break;
+                        usageCollector.push(value);
                         res.write(value);
                     }
+                    usage = usageCollector.finish();
                 } catch (streamErr) {
                     logger.error(`[Codex] Stream error: ${streamErr.message}`);
                 } finally {
@@ -1340,13 +1355,18 @@ async function _handleCodexViaAccountPool(req, res, body, rawBody, modelId, isSt
                 }
             } else {
                 const responseBody = await upstreamResponse.text();
+                try { usage = extractCodexUsage(JSON.parse(responseBody)); } catch { usage = null; }
                 res.setHeader('Content-Type', 'application/json');
                 res.send(responseBody);
             }
 
             const duration = Date.now() - startTime;
-            recordRequest({ provider: 'chatgpt-pool', keyId: creds.email, model: modelId, durationMs: duration, success: true });
-            logRequest({ route: '/backend-api/codex/responses', method: 'POST', provider: 'chatgpt-pool', keyId: creds.email, model: modelId, durationMs: duration, status: 200, success: true });
+            const inputTokens = usage?.inputTokens || 0;
+            const outputTokens = usage?.outputTokens || 0;
+            const cacheReadTokens = usage?.cacheReadTokens || 0;
+            const cost = estimateCostWithRegistry('openai', modelId, inputTokens, outputTokens, cacheReadTokens);
+            recordRequest({ provider: 'chatgpt-pool', keyId: creds.email, model: modelId, inputTokens, outputTokens, cacheReadTokens, cost, durationMs: duration, success: true });
+            logRequest({ route: '/backend-api/codex/responses', method: 'POST', provider: 'chatgpt-pool', keyId: creds.email, model: modelId, inputTokens, outputTokens, cost, durationMs: duration, status: 200, success: true });
             logger.success(`[Codex] <<< OK | account=${creds.email} | model=${modelId} | ${duration}ms`);
             return true;
         } catch (error) {

@@ -38,6 +38,8 @@ import {
     normalizeDeepSeekRequestBody
 } from '../deepseek-utils.js';
 import { shouldInjectEndTurnFalse, maybeInjectFromLocals } from '../utils/codex-compaction-tracker.js';
+import { estimateCostWithRegistry } from '../pricing-registry.js';
+import { createCodexUsageCollector, extractCodexUsage } from '../quota/codex-usage-collector.js';
 
 const UPSTREAM_URL = 'https://chatgpt.com/backend-api/codex/responses';
 const UPSTREAM_COMPACT_URL = 'https://chatgpt.com/backend-api/codex/responses/compact';
@@ -725,6 +727,7 @@ async function _handleResponsesViaAssignedAccount(req, res, rawBody, contentEnco
         const upstreamResponse = await fetch(targetUrl, { method: 'POST', headers: upstreamHeaders, body: rawBody });
         if (!upstreamResponse.ok) return false;
 
+        let usage = null;
         if (isStreaming) {
             res.setHeader('Content-Type', 'text/event-stream');
             res.setHeader('Cache-Control', 'no-cache');
@@ -732,14 +735,18 @@ async function _handleResponsesViaAssignedAccount(req, res, rawBody, contentEnco
             res.setHeader('X-Accel-Buffering', 'no');
             res.flushHeaders();
             const reader = upstreamResponse.body.getReader();
+            const usageCollector = createCodexUsageCollector();
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
+                usageCollector.push(value);
                 res.write(value);
             }
+            usage = usageCollector.finish();
             res.end();
         } else {
             const responseBody = await upstreamResponse.text();
+            try { usage = extractCodexUsage(JSON.parse(responseBody)); } catch { usage = null; }
             res.setHeader('Content-Type', 'application/json');
             if (isCompact) {
                 const normalized = normalizeCompactResponse(responseBody, modelId);
@@ -754,12 +761,16 @@ async function _handleResponsesViaAssignedAccount(req, res, rawBody, contentEnco
         }
 
         const duration = Date.now() - startTime;
+        const inputTokens = usage?.inputTokens || 0;
+        const outputTokens = usage?.outputTokens || 0;
+        const cacheReadTokens = usage?.cacheReadTokens || 0;
+        const cost = estimateCostWithRegistry('openai', modelId, inputTokens, outputTokens, cacheReadTokens);
         markCredentialSuccess(buildCredentialId('chatgpt-account', creds.email), {
             model: modelId,
             latencyMs: duration
         });
-        recordRequest({ provider: 'chatgpt-pool', keyId: creds.email, model: modelId, durationMs: duration, success: true });
-        logRequest({ route: '/responses', method: 'POST', provider: 'chatgpt-pool', keyId: creds.email, model: modelId, mappedModel: modelId, durationMs: duration, status: 200, success: true });
+        recordRequest({ provider: 'chatgpt-pool', keyId: creds.email, model: modelId, inputTokens, outputTokens, cacheReadTokens, cost, durationMs: duration, success: true });
+        logRequest({ route: '/responses', method: 'POST', provider: 'chatgpt-pool', keyId: creds.email, model: modelId, mappedModel: modelId, inputTokens, outputTokens, cost, durationMs: duration, status: 200, success: true });
         logger.success(`[Codex] <<< Assigned account OK | account=${creds.email} | model=${modelId} | ${duration}ms`);
         return true;
     } catch (error) {
@@ -1401,6 +1412,7 @@ async function _handleResponsesViaAccountPool(req, res, rawBody, contentEncoding
             rotator.notifySuccess(account, modelId);
             copyAllowedResponseHeaders(upstreamResponse, res);
 
+            let usage = null;
             if (isStreaming) {
                 res.setHeader('Content-Type', 'text/event-stream');
                 res.setHeader('Cache-Control', 'no-cache');
@@ -1409,12 +1421,15 @@ async function _handleResponsesViaAccountPool(req, res, rawBody, contentEncoding
                 res.flushHeaders();
 
                 const reader = upstreamResponse.body.getReader();
+                const usageCollector = createCodexUsageCollector();
                 try {
                     while (true) {
                         const { done, value } = await reader.read();
                         if (done) break;
+                        usageCollector.push(value);
                         res.write(value);
                     }
+                    usage = usageCollector.finish();
                 } catch (streamErr) {
                     logger.error(`[Codex Proxy] Stream error: ${streamErr.message}`);
                 } finally {
@@ -1422,6 +1437,7 @@ async function _handleResponsesViaAccountPool(req, res, rawBody, contentEncoding
                 }
             } else {
                 const responseBody = await upstreamResponse.text();
+                try { usage = extractCodexUsage(JSON.parse(responseBody)); } catch { usage = null; }
                 res.setHeader('Content-Type', 'application/json');
                 if (isCompact) {
                     const normalized = normalizeCompactResponse(responseBody, modelId);
@@ -1436,12 +1452,16 @@ async function _handleResponsesViaAccountPool(req, res, rawBody, contentEncoding
             }
 
             const duration = Date.now() - startTime;
+            const inputTokens = usage?.inputTokens || 0;
+            const outputTokens = usage?.outputTokens || 0;
+            const cacheReadTokens = usage?.cacheReadTokens || 0;
+            const cost = estimateCostWithRegistry('openai', modelId, inputTokens, outputTokens, cacheReadTokens);
             markCredentialSuccess(buildCredentialId('chatgpt-account', creds.email), {
                 model: modelId,
                 latencyMs: duration
             });
-            recordRequest({ provider: 'chatgpt-pool', keyId: creds.email, model: modelId, durationMs: duration, success: true });
-            logRequest({ route: '/responses', method: 'POST', provider: 'chatgpt-pool', keyId: creds.email, model: modelId, mappedModel: modelId, durationMs: duration, status: 200, success: true });
+            recordRequest({ provider: 'chatgpt-pool', keyId: creds.email, model: modelId, inputTokens, outputTokens, cacheReadTokens, cost, durationMs: duration, success: true });
+            logRequest({ route: '/responses', method: 'POST', provider: 'chatgpt-pool', keyId: creds.email, model: modelId, mappedModel: modelId, inputTokens, outputTokens, cost, durationMs: duration, status: 200, success: true });
             logger.success(`[Codex] <<< OK | account=${creds.email} | model=${modelId} | ${duration}ms`);
             return true;
         } catch (error) {

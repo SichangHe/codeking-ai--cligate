@@ -33,6 +33,9 @@ COMMANDS:
   accounts remove       Remove accounts interactively
   accounts verify       Verify account tokens are valid
   accounts clear        Remove all accounts
+  quota                 Show quota, velocity, reset, and guidance
+  quota --refresh       Refresh provider status before display
+  quota --json          Print the quota API schema
 
 OPTIONS:
   --help, -h            Show this help message
@@ -46,6 +49,7 @@ EXAMPLES:
   PORT=3000 cligate start
   cligate accounts add
   cligate accounts add --no-browser
+  cligate quota
 
 DASHBOARD:
   Open http://localhost:8081 to:
@@ -83,6 +87,11 @@ async function main() {
       await import('../src/cli/accounts.js');
       break;
     }
+
+    case 'quota':
+      process.argv = ['node', 'quota-cli.js', ...args.slice(1)];
+      await import('../src/cli/quota.js');
+      break;
 
     case 'help':
       showHelp();

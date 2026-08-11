@@ -6,6 +6,7 @@ import { once } from 'node:events';
 
 const baseUrl = process.env.ROUTING_TEST_BASE_URL || 'http://localhost:8081';
 const shouldSkip = process.env.ENABLE_LIVE_SERVER_TESTS !== 'true';
+const shouldSkipConfigMutation = shouldSkip || process.env.LIVE_SERVER_CONFIG_ISOLATED !== 'true';
 
 async function postJson(path, body) {
   const url = new URL(path, baseUrl);
@@ -92,7 +93,7 @@ test('POST /settings/haiku-model rejects invalid model', { skip: shouldSkip }, a
   assert.ok(String(json?.error || '').includes('Invalid haikuKiloModel'));
 });
 
-test('POST /claude/config/direct validates API key required', { skip: shouldSkip }, async () => {
+test('POST /claude/config/direct validates API key required', { skip: shouldSkipConfigMutation }, async () => {
   const { status, json } = await postJson('/claude/config/direct', {});
   assert.equal(status, 400);
   assert.equal(json?.success, false);

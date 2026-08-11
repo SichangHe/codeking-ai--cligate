@@ -46,6 +46,7 @@
     "accounts:list": "node src/cli/accounts.js list",
     "accounts:remove": "node src/cli/accounts.js remove",
     "accounts:verify": "node src/cli/accounts.js verify",
+    "quota": "node src/cli/quota.js",
     "test": "node --test tests/*.test.js",
     "test:unit": "node --test tests/unit/*.test.js",
     "test:all": "node --test tests/unit/*.test.js tests/*.test.js",

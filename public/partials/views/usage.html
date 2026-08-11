@@ -15,6 +15,55 @@
                     </button>
                 </div>
 
+                <!-- Quota planning -->
+                <div class="view-card usage-section-card mb-6" x-show="quotaSnapshot">
+                    <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+                        <div>
+                            <h3 class="text-xs font-mono text-gray-300 uppercase tracking-widest">Quota planning</h3>
+                            <p class="text-[10px] font-mono text-gray-500 mt-1">Provider status is measured; dollar quota and burn guidance are estimates.</p>
+                        </div>
+                        <span class="font-mono text-sm" :class="quotaSignalClass(quotaSnapshot?.aggregate?.signal)" x-text="quotaSignalLabel(quotaSnapshot?.aggregate?.signal)"></span>
+                    </div>
+                    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+                        <div class="rounded-lg border border-space-border/30 bg-space-900/40 p-3">
+                            <div class="text-xl font-mono text-neon-green" x-text="quotaMoney(quotaSnapshot?.aggregate?.remainingEquivalentQuotaUsd)"></div>
+                            <div class="text-[10px] uppercase text-gray-500 mt-1">estimated remaining</div>
+                        </div>
+                        <div class="rounded-lg border border-space-border/30 bg-space-900/40 p-3">
+                            <div class="text-xl font-mono text-neon-cyan" x-text="quotaRate(quotaSnapshot?.aggregate?.targetBurnRateUsdPerSecond)"></div>
+                            <div class="text-[10px] uppercase text-gray-500 mt-1">target burn</div>
+                        </div>
+                        <div class="rounded-lg border border-space-border/30 bg-space-900/40 p-3">
+                            <div class="text-xl font-mono text-white" x-text="quotaRate(quotaSnapshot?.aggregate?.actualVelocityUsdPerSecond)"></div>
+                            <div class="text-[10px] uppercase text-gray-500 mt-1">actual velocity</div>
+                        </div>
+                        <div class="rounded-lg border border-space-border/30 bg-space-900/40 p-3">
+                            <div class="text-sm font-mono text-gray-300" x-text="quotaSnapshot?.aggregate?.nextResetAt ? new Date(quotaSnapshot.aggregate.nextResetAt).toLocaleString() : 'Unavailable'"></div>
+                            <div class="text-[10px] uppercase text-gray-500 mt-1">next reset</div>
+                        </div>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="usage-table">
+                            <thead><tr class="border-b border-space-border/30">
+                                <th class="py-2 text-left text-[10px] text-gray-500 uppercase">account</th>
+                                <th class="py-2 text-right text-[10px] text-gray-500 uppercase">provider used</th>
+                                <th class="py-2 text-right text-[10px] text-gray-500 uppercase">remaining</th>
+                                <th class="py-2 text-right text-[10px] text-gray-500 uppercase">velocity</th>
+                                <th class="py-2 text-right text-[10px] text-gray-500 uppercase">guidance</th>
+                            </tr></thead>
+                            <tbody><template x-for="account in quotaSnapshot?.accounts || []" :key="account.account">
+                                <tr class="border-b border-space-border/10">
+                                    <td class="py-2 font-mono text-xs text-gray-300" x-text="account.account"></td>
+                                    <td class="py-2 text-right font-mono text-xs" :class="account.state === 'ok' ? 'text-gray-300' : 'text-yellow-400'" x-text="account.measured.usedPercent === null ? account.state : account.measured.usedPercent.toFixed(1) + '%' "></td>
+                                    <td class="py-2 text-right font-mono text-xs text-neon-green" x-text="quotaMoney(account.estimated.remainingEquivalentQuotaUsd)"></td>
+                                    <td class="py-2 text-right font-mono text-xs text-gray-300" x-text="quotaRate(account.estimated.actualVelocityUsdPerSecond)"></td>
+                                    <td class="py-2 text-right font-mono text-xs" :class="quotaSignalClass(account.estimated.signal)" x-text="quotaSignalLabel(account.estimated.signal)"></td>
+                                </tr>
+                            </template></tbody>
+                        </table>
+                    </div>
+                </div>
+
                 <!-- Overview cards -->
                 <div class="usage-overview-grid grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 lg:gap-3 mb-6">
                     <div class="usage-overview-card stat bg-space-900/40 border border-space-border/30 rounded-xl p-3 lg:p-4 min-w-0">
