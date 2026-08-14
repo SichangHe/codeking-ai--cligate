@@ -1,10 +1,12 @@
 import {
   getQuotaSnapshot,
+  getQuotaSummary,
   getQuotaHistory,
   getQuotaConfig,
   updateQuotaConfig,
   refreshQuotaStatuses
 } from '../quota/quota-service.js';
+import { TOKEN_ESTIMATE_NOTE } from '../quota/quota-calculator.js';
 
 export async function handleGetQuotaSnapshot(req, res) {
   try {
@@ -12,6 +14,80 @@ export async function handleGetQuotaSnapshot(req, res) {
   } catch {
     res.status(503).json({ schemaVersion: 1, state: 'unavailable', error: 'quota_snapshot_unavailable' });
   }
+}
+
+export async function handleGetQuotaSummary(req, res) {
+  try {
+    res.json(await getQuotaSummary({ refresh: req.query.refresh === 'true' }));
+  } catch {
+    res.status(503).json({
+      schemaVersion: 1,
+      state: 'unavailable',
+      error: 'quota_summary_unavailable',
+      aggregate: {
+        state: 'unavailable',
+        accountCount: 0,
+        usableAccountCount: 0,
+        counted: {
+          usedTokens: 0,
+          complete: null,
+          actualVelocityUsdPerSecond: null,
+          dollarVelocityAccountCount: 0,
+          actualVelocityTokensPerSecond: null,
+          tokenVelocityAccountCount: 0
+        },
+        estimated: {
+          remainingTokens: 0,
+          remainingEquivalentQuotaUsd: null,
+          targetBurnRateUsdPerSecond: null,
+          dollarTargetAccountCount: 0,
+          targetBurnRateTokensPerSecond: null,
+          tokenTargetAccountCount: 0,
+          reliable: false,
+          accountCount: 0,
+          usableAccountCount: 0,
+          fallbackAccountCount: 0,
+          reliableAccountCount: 0,
+          note: `${TOKEN_ESTIMATE_NOTE} A conservative 0-token aggregate is used because the snapshot is unavailable.`,
+          reasons: ['quota_snapshot_unavailable', 'conservative_zero_fallback']
+        },
+        nextResetAt: null,
+        signal: 'unavailable'
+      },
+      accounts: [],
+      links: { full: '/api/quota', help: '/api/quota/help' }
+    });
+  }
+}
+
+export function handleGetQuotaHelp(req, res) {
+  const localPort = Number(req.socket?.localPort ?? process.env.PORT ?? 8081);
+  const port = Number.isInteger(localPort) && localPort > 0 && localPort <= 65_535 ? localPort : 8081;
+  const origin = `http://127.0.0.1:${port}`;
+  res.json({
+    schemaVersion: 1,
+    purpose: 'Read measured provider quota, counted proxy tokens, and best-effort token estimates without post-processing.',
+    commands: {
+      summary: `curl -sS '${origin}/api/quota/summary?refresh=true'`,
+      help: `curl -sS '${origin}/api/quota/help'`
+    },
+    endpoints: [
+      {
+        method: 'GET',
+        path: '/api/quota/summary?refresh=true',
+        use: 'Refresh provider status and return the concise manager/agent view. Omit refresh=true to use cached status.'
+      },
+      { method: 'GET', path: '/api/quota', use: 'Return the full web-compatible quota snapshot.' },
+      { method: 'GET', path: '/api/quota/help', use: 'Return these commands and field meanings.' }
+    ],
+    fields: {
+      measured: 'Provider-reported percentage, state, and reset; not token counts.',
+      counted: 'Observed tokens plus actual USD/token velocities. dollarVelocityAccountCount and tokenVelocityAccountCount identify contributors; complete=false means a lower bound.',
+      estimated: 'Numeric remaining-token and remaining-quota estimates plus target USD/token rates. dollarTargetAccountCount and tokenTargetAccountCount identify contributors; token estimates include reliability metadata.',
+      reliable: 'True only when fresh usable provider data, a configured token budget, a future reset, and complete receipts support the planning math; it is not a guarantee.'
+    },
+    estimateNote: `${TOKEN_ESTIMATE_NOTE} Model, task complexity, context, reasoning, tools, retrieval, and caching can change actual usage.`
+  });
 }
 
 export function handleGetQuotaHistory(req, res) {

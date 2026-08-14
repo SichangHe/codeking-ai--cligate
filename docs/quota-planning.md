@@ -33,13 +33,17 @@
   - maps measured utilization to configured API-price-equivalent quota
   - counts receipt input and output tokens inside the provider reset window
   - estimates a token budget from counted tokens and a positive measured provider percentage when no token budget is configured
-    - requires complete receipt coverage for the provider reset window
+    - continues with a lower-bound count when receipt coverage is incomplete and marks the result unreliable
   - uses the lower of provider-percentage and counted-token remainder when a token budget is configured
+  - always returns a numeric per-account token estimate
+    - uses a documented conservative zero fallback for blocked, errored, reset-due, or mathematically indeterminate accounts
   - smooths actual velocity over `smoothingWindowMs`
   - compares actual and target burn within `safetyMargin`
-  - fails closed for stale, missing, errored, or provider-blocked status
+  - fails closed for money and burn guidance when status is stale, missing, errored, or provider-blocked
 - consumers
   - `GET /api/quota`
+  - `GET /api/quota/summary[?refresh=true]`
+  - `GET /api/quota/help`
   - `GET /api/quota/history`
   - `GET|PUT /api/quota/config`
   - `POST /api/quota/refresh`
@@ -68,19 +72,31 @@
 
 - schema version is `1`
 - `measured` contains provider observations
+  - provider percentages outside `0..100` are treated as an error state and force an unreliable conservative token fallback
 - `counted` contains tokens and requests observed by this CliGate instance in the reset window
-  - `complete: false` means the number is a lower bound and inferred tokens left remain unavailable
+  - `complete: false` means the number is a lower bound and an estimate derived from it is unreliable
 - `estimated` contains derived money, tokens, rates, and guidance
-- `estimated.remainingTokens` requires fresh usable provider status, a reset time, and either a configured token budget or both counted tokens and a positive measured provider percentage
-- inferred token budgets are high-uncertainty because provider utilization may be weighted and receipts may omit traffic that bypassed this CliGate instance
+- `estimated.remainingTokens` is always numeric; indeterminate cases use a conservative zero fallback
+- `estimated.remainingTokensReliable`, `remainingTokensMethod`, `remainingTokensNote`, and `remainingTokensReasons` disclose the estimate quality and derivation
+- `remainingTokensReliable: true` means the configured planning math has fresh usable provider data, a future reset, and complete receipts; it never guarantees actual allowance
+- inferred token budgets are unreliable because provider utilization may be weighted and receipts may omit traffic that bypassed this CliGate instance
+- [official Codex pricing guidance](https://developers.openai.com/codex/pricing) says usage varies with model, task size and complexity, context, reasoning, tools, retrieval, and caching, so token estimates are best-effort only
 - `uncertainty` is a list of machine-readable reasons
 - aggregate is `degraded` if any account is not usable
 - unavailable accounts never contribute remaining equivalent quota
+- aggregate remaining tokens are numeric and carry their own reliability, note, and reasons
+- aggregate target token burn remains unavailable unless at least one account has an actual target rate
+- aggregate `tokenTargetAccountCount` and `tokenVelocityAccountCount` identify the account subsets contributing target and actual token rates
+- aggregate token guidance remains unavailable unless target and actual velocity use the same account subset
+- aggregate `dollarTargetAccountCount` and `dollarVelocityAccountCount` likewise label USD rate subsets; generic guidance is unavailable when either USD or token contributor sets differ
+- `aggregate.tokenEstimateAccountCount` retains its original usable-estimate meaning; `numericTokenEstimateAccountCount` counts all numeric outputs and `fallbackTokenEstimateAccountCount` counts conservative fallbacks
 
 ## local access
 
 - web: open `http://127.0.0.1:18181`, select `Usage & Costs`, then refresh
-- API: `curl -sS 'http://127.0.0.1:18181/api/quota?refresh=true'`
+- concise API: `curl -sS 'http://127.0.0.1:18181/api/quota/summary?refresh=true'`
+- API help: `curl -sS 'http://127.0.0.1:18181/api/quota/help'`
+- full web schema: `curl -sS 'http://127.0.0.1:18181/api/quota?refresh=true'`
 - CLI from this checkout: `CLIGATE_URL=http://127.0.0.1:18181 node bin/cli.js quota --refresh`
 
 ## rollback

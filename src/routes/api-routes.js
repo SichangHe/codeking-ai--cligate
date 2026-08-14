@@ -21,7 +21,15 @@ import { handleGetClaudeConfig, handleSetProxyMode, handleSetDirectMode, handleS
 import { handleListApiKeys, handleGetApiKey, handleAddApiKey, handleRemoveApiKey, handleUpdateApiKey, handleValidateApiKey, handleGetApiKeyStats, handleListProviderPresets } from './api-keys-route.js';
 import { handleGetUsageOverview, handleGetUsageHistory, handleGetDailyStats, handleGetMonthlyStats, handleGetProviderStats, handleGetModelStats, handleGetAccountStats } from './usage-route.js';
 import { handleGetPricing, handleUpdatePricing, handleResetPricing } from './pricing-route.js';
-import { handleGetQuotaSnapshot, handleGetQuotaHistory, handleGetQuotaConfig, handleUpdateQuotaConfig, handleRefreshQuota } from './quota-route.js';
+import {
+  handleGetQuotaSnapshot,
+  handleGetQuotaSummary,
+  handleGetQuotaHelp,
+  handleGetQuotaHistory,
+  handleGetQuotaConfig,
+  handleUpdateQuotaConfig,
+  handleRefreshQuota
+} from './quota-route.js';
 import { handleGatewayChat, handleGatewayMessages, handleListProviders } from './gateway-route.js';
 import { handleGetModelMappings, handleSetProviderMapping, handleResetModelMappings, handleResolveModel } from './model-mapping-route.js';
 import { handleCodexResponses, handleCodexModels, handleCodexCatchAll } from './codex-route.js';
@@ -429,6 +437,8 @@ export function registerApiRoutes(app, { port }) {
 
   // ─── Quota Planning ───────────────────────────────────────────────────────
   app.get('/api/quota', handleGetQuotaSnapshot);
+  app.get('/api/quota/summary', handleGetQuotaSummary);
+  app.get('/api/quota/help', handleGetQuotaHelp);
   app.get('/api/quota/history', handleGetQuotaHistory);
   app.get('/api/quota/config', handleGetQuotaConfig);
   app.put('/api/quota/config', handleUpdateQuotaConfig);

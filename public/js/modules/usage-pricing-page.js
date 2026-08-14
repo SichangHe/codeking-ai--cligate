@@ -144,8 +144,9 @@ export function createUsagePricingPageModule() {
       const usedPercent = account?.measured?.usedPercent;
       const measured = usedPercent !== null && usedPercent !== undefined && usedPercent !== '' && Number.isFinite(Number(usedPercent))
         ? `${Number(usedPercent).toFixed(1)}%`
-        : account?.state || 'unavailable';
-      return account?.state === 'blocked' ? `${measured} · blocked` : measured;
+        : 'Unavailable';
+      if (account?.state === 'blocked') return `${measured} · blocked`;
+      return account?.state && account.state !== 'ok' ? `${measured} · ${account.state}` : measured;
     },
 
     quotaCountedTokens(account) {

@@ -2,7 +2,12 @@ import { getQuotaUsageReceipts, setQuotaUsageWindow } from '../usage-tracker.js'
 import { estimateCostWithRegistry } from '../pricing-registry.js';
 import { loadAccounts, updateAccountQuota } from '../account-manager.js';
 import { getAccountQuota as fetchAccountQuota } from '../model-api.js';
-import { computeAccountQuota, aggregateQuota, isRoutableAccount } from './quota-calculator.js';
+import {
+  computeAccountQuota,
+  aggregateQuota,
+  isRoutableAccount,
+  TOKEN_ESTIMATE_NOTE
+} from './quota-calculator.js';
 import { createQuotaStore } from './quota-store.js';
 
 const store = createQuotaStore();
@@ -164,9 +169,103 @@ export function buildQuotaSnapshot({ nowMs = Date.now() } = {}) {
   };
 }
 
+function numericOrZero(value) {
+  if (value === null || value === undefined || value === '') return 0;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
+}
+
+function numericOrNull(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+export function buildQuotaSummary(snapshot) {
+  const accounts = Array.isArray(snapshot?.accounts) ? snapshot.accounts : [];
+  const aggregate = snapshot?.aggregate || {};
+  return {
+    schemaVersion: snapshot?.schemaVersion || 1,
+    generatedAt: snapshot?.generatedAt || null,
+    state: snapshot?.state || aggregate.state || 'unavailable',
+    aggregate: {
+      state: aggregate.state || snapshot?.state || 'unavailable',
+      accountCount: aggregate.accountCount ?? accounts.length,
+      usableAccountCount: aggregate.usableAccountCount ?? 0,
+      counted: {
+        usedTokens: numericOrZero(aggregate.countedTokensUsed),
+        complete: aggregate.countedTokensComplete ?? null,
+        actualVelocityUsdPerSecond: numericOrNull(aggregate.actualVelocityUsdPerSecond),
+        dollarVelocityAccountCount: numericOrZero(aggregate.dollarVelocityAccountCount),
+        actualVelocityTokensPerSecond: numericOrNull(aggregate.actualVelocityTokensPerSecond),
+        tokenVelocityAccountCount: numericOrZero(aggregate.tokenVelocityAccountCount)
+      },
+      estimated: {
+        remainingTokens: numericOrZero(aggregate.remainingTokens),
+        remainingEquivalentQuotaUsd: numericOrNull(aggregate.remainingEquivalentQuotaUsd),
+        targetBurnRateUsdPerSecond: numericOrNull(aggregate.targetBurnRateUsdPerSecond),
+        dollarTargetAccountCount: numericOrZero(aggregate.dollarTargetAccountCount),
+        targetBurnRateTokensPerSecond: numericOrNull(aggregate.targetBurnRateTokensPerSecond),
+        tokenTargetAccountCount: numericOrZero(aggregate.tokenTargetAccountCount),
+        reliable: aggregate.remainingTokensReliable === true,
+        accountCount: aggregate.numericTokenEstimateAccountCount ?? accounts.length,
+        usableAccountCount: aggregate.tokenEstimateAccountCount ?? 0,
+        fallbackAccountCount: aggregate.fallbackTokenEstimateAccountCount ?? 0,
+        reliableAccountCount: aggregate.reliableTokenEstimateAccountCount ?? 0,
+        note: aggregate.remainingTokensNote || TOKEN_ESTIMATE_NOTE,
+        reasons: aggregate.remainingTokensReasons || []
+      },
+      nextResetAt: aggregate.nextResetAt || null,
+      signal: aggregate.signal || 'unavailable'
+    },
+    accounts: accounts.map(account => ({
+      account: account.account,
+      provider: account.provider,
+      planType: account.planType || null,
+      state: account.state,
+      source: account.source,
+      measured: {
+        fetchedAt: account.measured?.fetchedAt || null,
+        usedPercent: account.measured?.usedPercent ?? null,
+        remainingPercent: account.measured?.remainingPercent ?? null,
+        resetAt: account.measured?.resetAt || null,
+        windowSeconds: account.measured?.windowSeconds ?? null,
+        allowed: account.measured?.allowed ?? null,
+        limitReached: account.measured?.limitReached ?? null
+      },
+      counted: {
+        usedTokens: numericOrZero(account.counted?.usedTokens),
+        inputTokens: numericOrZero(account.counted?.inputTokens),
+        outputTokens: numericOrZero(account.counted?.outputTokens),
+        requests: numericOrZero(account.counted?.requests),
+        complete: account.counted?.complete ?? null,
+        completeFrom: account.counted?.completeFrom || null,
+        truncated: account.counted?.truncated === true,
+        from: account.counted?.from || null,
+        through: account.counted?.through || null
+      },
+      estimated: {
+        remainingTokens: numericOrZero(account.estimated?.remainingTokens),
+        reliable: account.estimated?.remainingTokensReliable === true,
+        method: account.estimated?.remainingTokensMethod || 'conservative_zero_fallback',
+        note: account.estimated?.remainingTokensNote || TOKEN_ESTIMATE_NOTE,
+        reasons: account.estimated?.remainingTokensReasons || ['estimate_metadata_unavailable']
+      }
+    })),
+    links: {
+      full: '/api/quota',
+      help: '/api/quota/help'
+    }
+  };
+}
+
 export async function getQuotaSnapshot({ refresh = false } = {}) {
   if (refresh || Object.keys(store.getStatuses()).length === 0) await refreshQuotaStatuses({ force: refresh });
   return buildQuotaSnapshot();
+}
+
+export async function getQuotaSummary({ refresh = false } = {}) {
+  return buildQuotaSummary(await getQuotaSnapshot({ refresh }));
 }
 
 export function getQuotaHistory(limit) { return store.getHistory(limit); }
