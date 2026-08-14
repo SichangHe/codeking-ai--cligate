@@ -13,10 +13,11 @@ test('quota store persists only normalized configuration and bounded observation
   const config = store.setConfig({
     pollingIntervalMs: 20_000,
     accessToken: 'must-not-survive',
-    providers: { codex: { quotaBudgetUsd: 90, secret: 'must-not-survive' } }
+    providers: { codex: { quotaBudgetUsd: 90, quotaBudgetTokens: 2_000_000, secret: 'must-not-survive' } }
   });
   assert.equal(config.pollingIntervalMs, 20_000);
   assert.equal(config.providers.codex.quotaBudgetUsd, 90);
+  assert.equal(config.providers.codex.quotaBudgetTokens, 2_000_000);
   assert.equal('accessToken' in config, false);
   assert.equal('secret' in config.providers.codex, false);
   store.addObservation({ at: '2026-08-10T19:00:00.000Z', account: 'a@example.test', usedPercent: 20 });

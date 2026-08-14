@@ -1,4 +1,4 @@
-import { getRecentHistory } from '../usage-tracker.js';
+import { getQuotaUsageReceipts, setQuotaUsageWindow } from '../usage-tracker.js';
 import { estimateCostWithRegistry } from '../pricing-registry.js';
 import { loadAccounts, updateAccountQuota } from '../account-manager.js';
 import { getAccountQuota as fetchAccountQuota } from '../model-api.js';
@@ -22,20 +22,26 @@ function safeErrorStatus(previous, error) {
   };
 }
 
-function normalizeCodexStatus(email, quota, previous) {
+export function normalizeCodexStatus(email, quota, previous) {
   const usage = quota?.usage;
-  const usedPercent = Number(usage?.percentage ?? usage?.totalTokenUsage);
+  const usedPercentValue = usage?.percentage ?? usage?.totalTokenUsage;
+  const usedPercentRaw = usedPercentValue === null || usedPercentValue === undefined
+    ? null
+    : Number(usedPercentValue);
+  const usedPercent = Number.isFinite(usedPercentRaw) ? usedPercentRaw : null;
   const resetAt = usage?.resetAt && Number.isFinite(Date.parse(usage.resetAt)) ? usage.resetAt : null;
-  const windowSeconds = Number(usage?.limitWindowSeconds);
+  const windowSeconds = usage?.limitWindowSeconds === null || usage?.limitWindowSeconds === undefined
+    ? null
+    : Number(usage.limitWindowSeconds);
   return {
     key: `codex:${email}`,
     provider: 'codex',
     account: email,
-    state: Number.isFinite(usedPercent) ? 'ok' : 'error',
-    source: Number.isFinite(usedPercent) ? 'provider_api_measured' : 'provider_api_unavailable',
-    usedPercent: Number.isFinite(usedPercent) ? usedPercent : null,
+    state: usedPercent === null ? 'error' : 'ok',
+    source: usedPercent === null ? 'provider_api_unavailable' : 'provider_api_measured',
+    usedPercent,
     resetAt,
-    windowSeconds: Number.isFinite(windowSeconds) ? windowSeconds : null,
+    windowSeconds: Number.isFinite(windowSeconds) && windowSeconds > 0 ? windowSeconds : null,
     allowed: usage?.allowed ?? null,
     limitReached: usage?.limitReached ?? null,
     planType: usage?.planType || null,
@@ -60,6 +66,10 @@ async function refreshCodexStatuses(force) {
       const quota = await fetchAccountQuota(account.accessToken, account.accountId);
       updateAccountQuota(account.email, quota);
       const status = normalizeCodexStatus(account.email, quota, previous);
+      setQuotaUsageWindow({
+        provider: 'chatgpt-pool', keyId: account.email, resetAt: status.resetAt,
+        windowSeconds: status.windowSeconds ?? config.providers.codex.resetWindowSeconds
+      });
       store.setStatus(key, status);
       store.addObservation({
         provider: 'codex', account: account.email, state: status.state,
@@ -85,11 +95,15 @@ function receiptCost(receipt) {
   return estimateCostWithRegistry('openai', receipt.model || 'gpt-5.3-codex', receipt.inputTokens || 0, receipt.outputTokens || 0, receipt.cacheReadTokens || 0);
 }
 
-function receiptsFor(email) {
-  return getRecentHistory(5000)
-    .filter(receipt => receipt.keyId === email && receipt.success !== false)
-    .filter(receipt => (Number(receipt.inputTokens) || 0) + (Number(receipt.outputTokens) || 0) > 0 || Number(receipt.cost) > 0)
-    .map(receipt => ({ ...receipt, costUsd: receiptCost(receipt) }));
+function receiptsFor(email, { fromMs, throughMs }) {
+  const result = getQuotaUsageReceipts({ provider: 'chatgpt-pool', keyId: email, fromMs, throughMs });
+  return {
+    receipts: result.receipts
+      .filter(receipt => receipt.provider === 'chatgpt-pool' && receipt.keyId === email)
+      .filter(receipt => (Number(receipt.inputTokens) || 0) + (Number(receipt.outputTokens) || 0) > 0 || Number(receipt.cost) > 0)
+      .map(receipt => ({ ...receipt, costUsd: receiptCost(receipt) })),
+    coverage: result.coverage
+  };
 }
 
 export function buildQuotaSnapshot({ nowMs = Date.now() } = {}) {
@@ -100,14 +114,32 @@ export function buildQuotaSnapshot({ nowMs = Date.now() } = {}) {
     const status = store.getStatuses()[`codex:${account.email}`] || {
       state: 'unavailable', source: 'provider_api_unavailable', fetchedAt: null
     };
+    const resetAtMs = Date.parse(status.resetAt || '');
+    const configuredWindowSeconds = override.resetWindowSeconds ?? providerConfig.resetWindowSeconds;
+    const statusWindowSeconds = status.windowSeconds === null || status.windowSeconds === undefined
+      ? null
+      : Number(status.windowSeconds);
+    const resetWindowSeconds = Number.isFinite(statusWindowSeconds) && statusWindowSeconds > 0
+      ? statusWindowSeconds
+      : configuredWindowSeconds;
+    setQuotaUsageWindow({
+      provider: 'chatgpt-pool', keyId: account.email,
+      resetAt: status.resetAt, windowSeconds: resetWindowSeconds
+    });
+    const windowStartMs = Number.isFinite(resetAtMs) && Number.isFinite(Number(resetWindowSeconds))
+      ? resetAtMs - Number(resetWindowSeconds) * 1000
+      : nowMs - config.smoothingWindowMs;
+    const receiptData = receiptsFor(account.email, { fromMs: windowStartMs, throughMs: nowMs });
     return computeAccountQuota({
       account: { email: account.email, provider: 'codex', planType: account.planType },
       status,
-      receipts: receiptsFor(account.email),
+      receipts: receiptData.receipts,
+      receiptCoverage: receiptData.coverage,
       config: {
         ...config,
         quotaBudgetUsd: override.quotaBudgetUsd ?? providerConfig.quotaBudgetUsd,
-        resetWindowSeconds: override.resetWindowSeconds ?? providerConfig.resetWindowSeconds
+        quotaBudgetTokens: override.quotaBudgetTokens ?? providerConfig.quotaBudgetTokens,
+        resetWindowSeconds: configuredWindowSeconds
       },
       nowMs
     });

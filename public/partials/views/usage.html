@@ -20,9 +20,27 @@
                     <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
                         <div>
                             <h3 class="text-xs font-mono text-gray-300 uppercase tracking-widest">Quota planning</h3>
-                            <p class="text-[10px] font-mono text-gray-500 mt-1">Provider status is measured; dollar quota and burn guidance are estimates.</p>
+                            <p class="text-[10px] font-mono text-gray-500 mt-1">Provider percent and availability are measured. Used tokens come only from ChatGPT-pool receipts; incomplete counts are marked partial, and tokens left stay unavailable without complete coverage or a configured denominator.</p>
                         </div>
                         <span class="font-mono text-sm" :class="quotaSignalClass(quotaSnapshot?.aggregate?.signal)" x-text="quotaSignalLabel(quotaSnapshot?.aggregate?.signal)"></span>
+                    </div>
+                    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-3">
+                        <div class="rounded-lg border border-space-border/30 bg-space-900/40 p-3">
+                            <div class="text-xl font-mono text-white" x-text="quotaAggregateCountedTokens(quotaSnapshot?.aggregate)"></div>
+                            <div class="text-[10px] uppercase text-gray-500 mt-1">counted tokens used</div>
+                        </div>
+                        <div class="rounded-lg border border-space-border/30 bg-space-900/40 p-3">
+                            <div class="text-xl font-mono text-neon-green" x-text="quotaTokens(quotaSnapshot?.aggregate?.remainingTokens)"></div>
+                            <div class="text-[10px] uppercase text-gray-500 mt-1">estimated tokens left · <span x-text="(quotaSnapshot?.aggregate?.tokenEstimateAccountCount || 0) + '/' + (quotaSnapshot?.aggregate?.accountCount || 0) + ' accounts'"></span></div>
+                        </div>
+                        <div class="rounded-lg border border-space-border/30 bg-space-900/40 p-3">
+                            <div class="text-xl font-mono text-neon-cyan" x-text="quotaTokenRate(quotaSnapshot?.aggregate?.targetBurnRateTokensPerSecond)"></div>
+                            <div class="text-[10px] uppercase text-gray-500 mt-1">target token burn</div>
+                        </div>
+                        <div class="rounded-lg border border-space-border/30 bg-space-900/40 p-3">
+                            <div class="text-xl font-mono text-white" x-text="quotaTokenRate(quotaSnapshot?.aggregate?.actualVelocityTokensPerSecond)"></div>
+                            <div class="text-[10px] uppercase text-gray-500 mt-1">counted token velocity</div>
+                        </div>
                     </div>
                     <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
                         <div class="rounded-lg border border-space-border/30 bg-space-900/40 p-3">
@@ -47,16 +65,22 @@
                             <thead><tr class="border-b border-space-border/30">
                                 <th class="py-2 text-left text-[10px] text-gray-500 uppercase">account</th>
                                 <th class="py-2 text-right text-[10px] text-gray-500 uppercase">provider used</th>
-                                <th class="py-2 text-right text-[10px] text-gray-500 uppercase">remaining</th>
-                                <th class="py-2 text-right text-[10px] text-gray-500 uppercase">velocity</th>
+                                <th class="py-2 text-right text-[10px] text-gray-500 uppercase">counted tokens</th>
+                                <th class="py-2 text-right text-[10px] text-gray-500 uppercase">estimated tokens left</th>
+                                <th class="py-2 text-right text-[10px] text-gray-500 uppercase">estimated $ left</th>
+                                <th class="py-2 text-right text-[10px] text-gray-500 uppercase">token velocity</th>
+                                <th class="py-2 text-right text-[10px] text-gray-500 uppercase">reset</th>
                                 <th class="py-2 text-right text-[10px] text-gray-500 uppercase">guidance</th>
                             </tr></thead>
                             <tbody><template x-for="account in quotaSnapshot?.accounts || []" :key="account.account">
                                 <tr class="border-b border-space-border/10">
                                     <td class="py-2 font-mono text-xs text-gray-300" x-text="account.account"></td>
-                                    <td class="py-2 text-right font-mono text-xs" :class="account.state === 'ok' ? 'text-gray-300' : 'text-yellow-400'" x-text="account.measured.usedPercent === null ? account.state : account.measured.usedPercent.toFixed(1) + '%' "></td>
+                                    <td class="py-2 text-right font-mono text-xs" :class="account.state === 'ok' ? 'text-gray-300' : 'text-yellow-400'" x-text="quotaProviderUsage(account)"></td>
+                                    <td class="py-2 text-right font-mono text-xs text-gray-300" x-text="quotaCountedTokens(account)"></td>
+                                    <td class="py-2 text-right font-mono text-xs text-neon-green" x-text="quotaTokens(account.estimated.remainingTokens)"></td>
                                     <td class="py-2 text-right font-mono text-xs text-neon-green" x-text="quotaMoney(account.estimated.remainingEquivalentQuotaUsd)"></td>
-                                    <td class="py-2 text-right font-mono text-xs text-gray-300" x-text="quotaRate(account.estimated.actualVelocityUsdPerSecond)"></td>
+                                    <td class="py-2 text-right font-mono text-xs text-gray-300" x-text="quotaTokenRate(account.estimated.actualVelocityTokensPerSecond)"></td>
+                                    <td class="py-2 text-right font-mono text-xs text-gray-400" x-text="account.measured.resetAt ? new Date(account.measured.resetAt).toLocaleString() : 'Unavailable'"></td>
                                     <td class="py-2 text-right font-mono text-xs" :class="quotaSignalClass(account.estimated.signal)" x-text="quotaSignalLabel(account.estimated.signal)"></td>
                                 </tr>
                             </template></tbody>

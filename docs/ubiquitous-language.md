@@ -9,6 +9,10 @@
 - `stale`: last observation is older than `staleAfterMs`
 - `error`: the latest provider status request failed
 - `receipt`: one proxy request record containing timestamp, account key, model, token counts, and price-equivalent cost inputs
+- `counted tokens`: input plus output tokens in ChatGPT-pool receipts observed by this CliGate instance during the provider reset window
+  - an incomplete count is a lower bound and cannot infer tokens left
+- `token budget`: configured raw-token limit or a high-uncertainty limit inferred by scaling counted tokens against measured provider utilization
+- `remaining tokens`: conservative estimate derived from a token budget, counted tokens, and measured provider utilization
 - `observation`: normalized provider utilization and reset sample retained for recomputation
 - `equivalent quota`: configured API-price-equivalent budget for a subscription rate-limit window
   - not a provider balance or billing credit
@@ -16,4 +20,4 @@
 - `actual velocity`: smoothed price-equivalent spend or token consumption per second from receipts
 - `target burn rate`: safe remaining equivalent quota divided by seconds until reset
 - `guidance signal`: `speed_up`, `slow_down`, `on_track`, or `unavailable`
-- `fail closed`: suppress remaining quota and guidance when provider status is missing, stale, or errored
+- `fail closed`: suppress remaining quota and guidance when provider status is missing, stale, errored, or reports the account blocked

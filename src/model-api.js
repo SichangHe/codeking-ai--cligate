@@ -72,9 +72,12 @@ export async function fetchUsage(accessToken, accountId) {
     
     const data = await response.json();
     
-    const primaryWindow = data.rate_limit?.primary_window || {};
-    const usedPercentRaw = Number(primaryWindow?.used_percent);
-    const usedPercent = Number.isFinite(usedPercentRaw) ? usedPercentRaw : 0;
+    const primaryWindow = data.rate_limit?.primary_window;
+    const usedPercentValue = primaryWindow?.used_percent;
+    const usedPercentRaw = usedPercentValue === null || usedPercentValue === undefined
+        ? null
+        : Number(usedPercentValue);
+    const usedPercent = Number.isFinite(usedPercentRaw) ? usedPercentRaw : null;
 
     const limitWindowSecondsRaw = Number(primaryWindow?.limit_window_seconds);
     const limitWindowSeconds = Number.isFinite(limitWindowSecondsRaw) ? limitWindowSecondsRaw : null;
@@ -88,14 +91,14 @@ export async function fetchUsage(accessToken, accountId) {
     return {
         totalTokenUsage: usedPercent,
         limit: 100,
-        remaining: 100 - usedPercent,
+        remaining: usedPercent === null ? null : 100 - usedPercent,
         percentage: usedPercent,
         resetAt: resetAt,
         resetAfterSeconds: resetAfterSeconds,
         limitWindowSeconds: limitWindowSeconds,
         planType: data.plan_type || null,
-        limitReached: data.rate_limit?.limit_reached || false,
-        allowed: data.rate_limit?.allowed ?? true,
+        limitReached: data.rate_limit?.limit_reached ?? null,
+        allowed: data.rate_limit?.allowed ?? null,
         raw: data
     };
 }

@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createUsagePricingPageModule } from '../../public/js/modules/usage-pricing-page.js';
 
 test('quota API returns one credential-free versioned schema and accepts safe config', async t => {
   const configDir = mkdtempSync(join(tmpdir(), 'cligate-quota-api-'));
@@ -42,11 +43,24 @@ test('web UI and command help expose quota planning', () => {
   const viewSource = readFileSync(new URL('../../public/partials/views/usage.html', import.meta.url), 'utf8');
   assert.match(moduleSource, /api\/quota/);
   assert.match(moduleSource, /quotaSignalLabel/);
+  assert.match(moduleSource, /quotaTokens/);
   assert.match(viewSource, /remainingEquivalentQuotaUsd/);
+  assert.match(moduleSource, /account\?\.counted\?\.usedTokens/);
+  assert.match(viewSource, /quotaCountedTokens\(account\)/);
+  assert.match(viewSource, /account\.estimated\.remainingTokens/);
   assert.match(viewSource, /actualVelocityUsdPerSecond/);
   const help = execFileSync(process.execPath, ['bin/cli.js', '--help'], { encoding: 'utf8' });
   assert.match(help, /quota --refresh/);
   assert.match(help, /quota --json/);
+});
+
+test('quota UI does not render unavailable numeric values as zero', () => {
+  const page = createUsagePricingPageModule();
+  assert.equal(page.quotaMoney(null), 'Unavailable');
+  assert.equal(page.quotaTokens(null), 'Unavailable');
+  assert.equal(page.quotaProviderUsage({ state: 'blocked', measured: { usedPercent: 0 } }), '0.0% · blocked');
+  assert.equal(page.quotaCountedTokens({ counted: { usedTokens: 100, complete: false } }), '≥100 · partial');
+  assert.equal(page.quotaAggregateCountedTokens({ countedTokensUsed: 100, countedTokensComplete: false }), '≥100 · partial');
 });
 
 test('both native Codex response routes plumb measured usage into receipts', () => {

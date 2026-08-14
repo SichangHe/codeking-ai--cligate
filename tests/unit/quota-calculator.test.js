@@ -37,7 +37,12 @@ test('calculates provider-based remaining quota, reset target, and receipt veloc
   assert.equal(result.estimated.remainingEquivalentQuotaUsd, 75);
   assert.equal(result.estimated.observedSpendUsd, 6);
   assert.equal(result.estimated.observedTokens, 3300);
+  assert.equal(result.counted.usedTokens, 3300);
+  assert.equal(result.estimated.quotaBudgetTokens, 13_200);
+  assert.equal(result.estimated.quotaBudgetTokensSource, 'inferred_from_counted_tokens_and_provider_percent');
+  assert.equal(result.estimated.remainingTokens, 9900);
   assert.equal(result.estimated.targetBurnRateUsdPerSecond, 67.5 / 3600);
+  assert.equal(result.estimated.targetBurnRateTokensPerSecond, 9900 * 0.9 / 3600);
   assert.equal(result.estimated.actualVelocityUsdPerSecond, 6 / 1800);
   assert.equal(result.estimated.signal, 'speed_up');
 });
@@ -57,6 +62,63 @@ test('infers an explicitly uncertain equivalent budget when no assumption is con
   assert.ok(result.uncertainty.includes('quota_budget_inferred_from_partial_receipts'));
 });
 
+test('uses an explicit token budget and the more conservative provider or receipt remainder', () => {
+  const result = account({ config: {
+    quotaBudgetUsd: null, quotaBudgetTokens: 20_000, staleAfterMs: 300_000,
+    smoothingWindowMs: 3_600_000, resetWindowSeconds: 18_000, safetyMargin: 0.1
+  } });
+  assert.equal(result.estimated.quotaBudgetTokensSource, 'configured');
+  assert.equal(result.estimated.remainingAfterCountedTokens, 16_700);
+  assert.equal(result.estimated.remainingTokens, 15_000);
+  assert.ok(result.uncertainty.includes('provider_and_counted_token_estimates_differ'));
+});
+
+test('does not infer tokens left without a positive provider denominator', () => {
+  const result = account({ status: {
+    state: 'ok', source: 'provider_api_measured', usedPercent: 0,
+    fetchedAt: '2026-08-10T19:59:00.000Z', resetAt: '2026-08-10T21:00:00.000Z',
+    windowSeconds: 18_000, allowed: true, limitReached: false
+  } });
+  assert.equal(result.estimated.quotaBudgetTokens, null);
+  assert.equal(result.estimated.remainingTokens, null);
+  assert.ok(result.uncertainty.includes('token_budget_needs_positive_provider_percent'));
+});
+
+test('does not infer tokens left from incomplete receipt coverage', () => {
+  const result = account({ receiptCoverage: {
+    complete: false, completeFrom: '2026-08-10T19:45:00.000Z', truncated: true
+  } });
+  assert.equal(result.counted.complete, false);
+  assert.equal(result.counted.truncated, true);
+  assert.equal(result.estimated.quotaBudgetTokens, null);
+  assert.equal(result.estimated.remainingTokens, null);
+  assert.ok(result.uncertainty.includes('token_budget_needs_complete_receipts'));
+});
+
+test('fails closed when the provider reports that an account is blocked', () => {
+  const result = account({ status: {
+    state: 'ok', source: 'provider_api_measured', usedPercent: 0,
+    fetchedAt: '2026-08-10T19:59:00.000Z', resetAt: '2026-08-10T21:00:00.000Z',
+    windowSeconds: 18_000, allowed: false, limitReached: true
+  } });
+  assert.equal(result.state, 'blocked');
+  assert.equal(result.estimated.remainingEquivalentQuotaUsd, null);
+  assert.equal(result.estimated.remainingTokens, null);
+  assert.equal(result.estimated.signal, 'unavailable');
+});
+
+test('fails closed after the measured provider reset time has elapsed', () => {
+  const result = account({ status: {
+    state: 'ok', source: 'provider_api_measured', usedPercent: 25,
+    fetchedAt: '2026-08-10T19:59:00.000Z', resetAt: '2026-08-10T19:59:30.000Z',
+    windowSeconds: 18_000, allowed: true, limitReached: false
+  } });
+  assert.equal(result.state, 'reset_due');
+  assert.equal(result.estimated.remainingEquivalentQuotaUsd, null);
+  assert.equal(result.estimated.remainingTokens, null);
+  assert.equal(result.estimated.signal, 'unavailable');
+});
+
 test('fails closed when provider data is stale', () => {
   const result = account({
     status: {
@@ -66,6 +128,7 @@ test('fails closed when provider data is stale', () => {
   });
   assert.equal(result.state, 'stale');
   assert.equal(result.estimated.remainingEquivalentQuotaUsd, null);
+  assert.equal(result.estimated.remainingTokens, null);
   assert.equal(result.estimated.targetBurnRateUsdPerSecond, null);
   assert.equal(result.estimated.signal, 'unavailable');
 });
@@ -81,6 +144,8 @@ test('aggregates only usable accounts and marks partial data degraded', () => {
   assert.equal(aggregate.accountCount, 2);
   assert.equal(aggregate.usableAccountCount, 1);
   assert.equal(aggregate.remainingEquivalentQuotaUsd, 75);
+  assert.equal(aggregate.remainingTokens, 9900);
+  assert.equal(aggregate.tokenEstimateAccountCount, 1);
 });
 
 test('does not invent aggregate velocity before two receipt samples exist', () => {

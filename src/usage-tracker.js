@@ -15,13 +15,18 @@ import { CONFIG_DIR } from './account-manager.js';
 
 const STATS_FILE = join(CONFIG_DIR, 'usage-stats.json');
 const HISTORY_FILE = join(CONFIG_DIR, 'usage-history.json');
+const QUOTA_USAGE_FILE = join(CONFIG_DIR, 'quota-usage.json');
 const MAX_HISTORY = 2000;
 const DEBOUNCE_MS = 2000;
+const QUOTA_BUCKET_MS = 60 * 1000;
+const QUOTA_RETENTION_MS = 8 * 24 * 60 * 60 * 1000;
 
 let aggregatedStats = null;
 let usageHistory = null;
+let quotaUsage = null;
 let savePending = false;
 let saveTimer = null;
+let lastQuotaPruneMs = 0;
 
 // ─── Load / Save ──────────────────────────────────────────────────────────────
 
@@ -82,6 +87,83 @@ function loadHistory() {
     return usageHistory;
 }
 
+function addQuotaUsage(target, entry) {
+    if (entry.provider !== 'chatgpt-pool' || entry.success === false || !entry.keyId) return;
+    const timestampMs = Date.parse(entry.timestamp || '');
+    const tokens = (Number(entry.inputTokens) || 0) + (Number(entry.outputTokens) || 0);
+    if (!Number.isFinite(timestampMs) || tokens <= 0) return;
+    const accountKey = `${entry.provider}:${entry.keyId}`;
+    const window = target.windows?.[accountKey];
+    const resetAtMs = Date.parse(window?.resetAt || '');
+    const windowMs = Number(window?.windowSeconds) * 1000;
+    let windowStartMs = null;
+    if (Number.isFinite(resetAtMs) && Number.isFinite(windowMs) && windowMs > 0) {
+        windowStartMs = timestampMs < resetAtMs
+            ? resetAtMs - Math.ceil((resetAtMs - timestampMs) / windowMs) * windowMs
+            : resetAtMs + Math.floor((timestampMs - resetAtMs) / windowMs) * windowMs;
+    }
+    const minuteStartMs = Math.floor(timestampMs / QUOTA_BUCKET_MS) * QUOTA_BUCKET_MS;
+    const bucketStartMs = windowStartMs === null ? minuteStartMs : Math.max(minuteStartMs, windowStartMs);
+    const bucketKey = `${bucketStartMs}:${entry.model || ''}`;
+    if (!target.buckets[accountKey]) target.buckets[accountKey] = {};
+    const bucket = target.buckets[accountKey][bucketKey] || {
+        provider: entry.provider, keyId: entry.keyId, model: entry.model || '',
+        from: entry.timestamp, through: entry.timestamp, requests: 0,
+        inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cost: 0
+    };
+    bucket.from = bucket.from < entry.timestamp ? bucket.from : entry.timestamp;
+    bucket.through = bucket.through > entry.timestamp ? bucket.through : entry.timestamp;
+    bucket.requests += 1;
+    bucket.inputTokens += Number(entry.inputTokens) || 0;
+    bucket.outputTokens += Number(entry.outputTokens) || 0;
+    bucket.cacheReadTokens += Number(entry.cacheReadTokens) || 0;
+    bucket.cost += Number(entry.cost) || 0;
+    target.buckets[accountKey][bucketKey] = bucket;
+}
+
+function createQuotaUsage() {
+    const history = loadHistory();
+    const now = new Date().toISOString();
+    const oldest = history.map(entry => entry?.timestamp).filter(Boolean).sort()[0];
+    const target = {
+        schemaVersion: 1,
+        completeFrom: history.length < MAX_HISTORY && oldest ? oldest : now,
+        migratedRecentHistory: history.length > 0,
+        windows: {},
+        buckets: {}
+    };
+    for (const entry of [...history].reverse()) addQuotaUsage(target, entry);
+    return target;
+}
+
+function loadQuotaUsage() {
+    if (quotaUsage !== null) return quotaUsage;
+    if (existsSync(QUOTA_USAGE_FILE)) {
+        try {
+            const stored = JSON.parse(readFileSync(QUOTA_USAGE_FILE, 'utf8'));
+            if (stored?.schemaVersion === 1 && stored.buckets && typeof stored.buckets === 'object') {
+                if (!stored.windows || typeof stored.windows !== 'object') stored.windows = {};
+                quotaUsage = stored;
+                return quotaUsage;
+            }
+        } catch { /* rebuild from bounded history */ }
+    }
+    quotaUsage = createQuotaUsage();
+    return quotaUsage;
+}
+
+function pruneQuotaUsage(target, nowMs = Date.now()) {
+    if (nowMs - lastQuotaPruneMs < 60 * 60 * 1000) return;
+    const cutoffMs = nowMs - QUOTA_RETENTION_MS;
+    for (const [accountKey, buckets] of Object.entries(target.buckets)) {
+        for (const [bucketKey, bucket] of Object.entries(buckets)) {
+            if (Date.parse(bucket.through || '') < cutoffMs) delete buckets[bucketKey];
+        }
+        if (Object.keys(buckets).length === 0) delete target.buckets[accountKey];
+    }
+    lastQuotaPruneMs = nowMs;
+}
+
 function scheduleSave() {
     if (savePending) return;
     savePending = true;
@@ -98,6 +180,9 @@ function flushToDisk() {
         }
         if (usageHistory) {
             writeFileSync(HISTORY_FILE, JSON.stringify(usageHistory), { mode: 0o600 });
+        }
+        if (quotaUsage) {
+            writeFileSync(QUOTA_USAGE_FILE, JSON.stringify(quotaUsage), { mode: 0o600 });
         }
     } catch { /* ignore write errors */ }
 }
@@ -135,10 +220,11 @@ export function recordRequest({
     cost = 0,
     durationMs = 0,
     success = true,
-    error = null
+    error = null,
+    timestamp = new Date().toISOString()
 }) {
     const entry = {
-        timestamp: new Date().toISOString(),
+        timestamp,
         provider,
         keyId,
         model,
@@ -150,6 +236,7 @@ export function recordRequest({
         success,
         error
     };
+    const quotaTarget = loadQuotaUsage();
 
     // History (persisted)
     const history = loadHistory();
@@ -157,6 +244,8 @@ export function recordRequest({
     if (history.length > MAX_HISTORY) {
         usageHistory = history.slice(0, MAX_HISTORY);
     }
+    addQuotaUsage(quotaTarget, entry);
+    pruneQuotaUsage(quotaTarget);
 
     // Aggregated stats
     const stats = loadStats();
@@ -201,6 +290,52 @@ export function recordRequest({
 
 export function getRecentHistory(limit = 50) {
     return loadHistory().slice(0, limit);
+}
+
+export function getQuotaUsageReceipts({ provider, keyId, fromMs, throughMs = Date.now() }) {
+    const target = loadQuotaUsage();
+    pruneQuotaUsage(target, throughMs);
+    const accountKey = `${provider}:${keyId}`;
+    let boundaryOverlap = false;
+    const receipts = Object.values(target.buckets[accountKey] || {})
+        .filter(bucket => {
+            const bucketFromMs = Date.parse(bucket.from || '');
+            const bucketThroughMs = Date.parse(bucket.through || '');
+            if (bucket.provider !== provider || bucket.keyId !== keyId
+                || !Number.isFinite(bucketFromMs) || !Number.isFinite(bucketThroughMs)) return false;
+            const overlapsStart = bucketFromMs < fromMs && bucketThroughMs >= fromMs;
+            const overlapsEnd = bucketFromMs <= throughMs && bucketThroughMs > throughMs;
+            if (overlapsStart || overlapsEnd) boundaryOverlap = true;
+            return bucketFromMs >= fromMs && bucketThroughMs <= throughMs;
+        })
+        .map(bucket => ({ ...bucket, timestamp: bucket.through }));
+    const completeFromMs = Date.parse(target.completeFrom || '');
+    const retainedFromMs = throughMs - QUOTA_RETENTION_MS;
+    const complete = !boundaryOverlap && Number.isFinite(fromMs) && Number.isFinite(completeFromMs)
+        && completeFromMs <= fromMs && retainedFromMs <= fromMs;
+    scheduleSave();
+    return {
+        receipts,
+        coverage: {
+            complete,
+            completeFrom: target.completeFrom || null,
+            truncated: !complete
+        }
+    };
+}
+
+export function setQuotaUsageWindow({ provider, keyId, resetAt, windowSeconds }) {
+    const resetAtMs = Date.parse(resetAt || '');
+    const seconds = Number(windowSeconds);
+    if (!provider || !keyId || !Number.isFinite(resetAtMs) || !Number.isFinite(seconds) || seconds <= 0) return false;
+    const target = loadQuotaUsage();
+    target.windows[`${provider}:${keyId}`] = {
+        resetAt: new Date(resetAtMs).toISOString(),
+        windowSeconds: seconds,
+        updatedAt: new Date().toISOString()
+    };
+    scheduleSave();
+    return true;
 }
 
 export function getDailyStats(days = 7) {

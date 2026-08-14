@@ -117,11 +117,45 @@ export function createUsagePricingPageModule() {
     },
 
     quotaMoney(value) {
-      return Number.isFinite(Number(value)) ? `$${Number(value).toFixed(2)}` : 'Unavailable';
+      return value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value))
+        ? `$${Number(value).toFixed(2)}`
+        : 'Unavailable';
     },
 
     quotaRate(value) {
-      return Number.isFinite(Number(value)) ? `$${(Number(value) * 3600).toFixed(2)}/h` : 'Unavailable';
+      return value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value))
+        ? `$${(Number(value) * 3600).toFixed(2)}/h`
+        : 'Unavailable';
+    },
+
+    quotaTokens(value) {
+      return value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value))
+        ? Math.round(Number(value)).toLocaleString()
+        : 'Unavailable';
+    },
+
+    quotaTokenRate(value) {
+      return value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value))
+        ? `${Math.round(Number(value) * 3600).toLocaleString()}/h`
+        : 'Unavailable';
+    },
+
+    quotaProviderUsage(account) {
+      const usedPercent = account?.measured?.usedPercent;
+      const measured = usedPercent !== null && usedPercent !== undefined && usedPercent !== '' && Number.isFinite(Number(usedPercent))
+        ? `${Number(usedPercent).toFixed(1)}%`
+        : account?.state || 'unavailable';
+      return account?.state === 'blocked' ? `${measured} · blocked` : measured;
+    },
+
+    quotaCountedTokens(account) {
+      const value = this.quotaTokens(account?.counted?.usedTokens);
+      return account?.counted?.complete === false ? `≥${value} · partial` : value;
+    },
+
+    quotaAggregateCountedTokens(aggregate) {
+      const value = this.quotaTokens(aggregate?.countedTokensUsed);
+      return aggregate?.countedTokensComplete === false ? `≥${value} · partial` : value;
     },
 
     quotaSignalLabel(value) {

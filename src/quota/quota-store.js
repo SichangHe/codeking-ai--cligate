@@ -12,7 +12,7 @@ export const DEFAULT_QUOTA_CONFIG = {
   maxHistoryEntries: 5000,
   safetyMargin: 0.15,
   providers: {
-    codex: { enabled: true, quotaBudgetUsd: null, resetWindowSeconds: 5 * 60 * 60 }
+    codex: { enabled: true, quotaBudgetUsd: null, quotaBudgetTokens: null, resetWindowSeconds: 5 * 60 * 60 }
   },
   accountOverrides: {}
 };
@@ -50,6 +50,7 @@ function normalizeConfig(value) {
     if (!email || !override || typeof override !== 'object') continue;
     normalizedOverrides[email] = {
       quotaBudgetUsd: optionalNonNegative(override.quotaBudgetUsd, undefined),
+      quotaBudgetTokens: optionalNonNegative(override.quotaBudgetTokens, undefined),
       resetWindowSeconds: finiteOr(override.resetWindowSeconds, undefined, { min: 60, max: 31_536_000 })
     };
     for (const key of Object.keys(normalizedOverrides[email])) {
@@ -68,6 +69,7 @@ function normalizeConfig(value) {
       codex: {
         enabled: codex.enabled !== false,
         quotaBudgetUsd: optionalNonNegative(codex.quotaBudgetUsd, DEFAULT_QUOTA_CONFIG.providers.codex.quotaBudgetUsd),
+        quotaBudgetTokens: optionalNonNegative(codex.quotaBudgetTokens, DEFAULT_QUOTA_CONFIG.providers.codex.quotaBudgetTokens),
         resetWindowSeconds: finiteOr(codex.resetWindowSeconds, DEFAULT_QUOTA_CONFIG.providers.codex.resetWindowSeconds, { min: 60, max: 31_536_000 })
       }
     },
