@@ -49,6 +49,10 @@ test('calculates provider-based remaining quota, reset target, and receipt veloc
   assert.equal(result.estimated.targetBurnRateTokensPerSecond, 9900 * 0.9 / 3600);
   assert.equal(result.estimated.actualVelocityUsdPerSecond, 6 / 1800);
   assert.equal(result.estimated.signal, 'speed_up');
+  assert.equal(result.estimated.signalSource, 'usd');
+  const aggregate = aggregateQuota([result], { nowMs, safetyMargin: 0.1 });
+  assert.equal(aggregate.signal, 'speed_up');
+  assert.equal(aggregate.signalSource, 'usd');
 });
 
 test('excludes receipts before the reset window boundary', () => {
@@ -77,6 +81,19 @@ test('uses an explicit token budget and the more conservative provider or receip
   assert.equal(result.estimated.remainingTokensReliable, true);
   assert.equal(result.estimated.remainingTokensMethod, 'configured_budget_conservative_minimum');
   assert.ok(result.uncertainty.includes('provider_and_counted_token_estimates_differ'));
+  const tokenOnly = account({
+    receipts: [
+      { timestamp: '2026-08-10T19:30:00.000Z', inputTokens: 1000, outputTokens: 100, costUsd: 0 },
+      { timestamp: '2026-08-10T19:50:00.000Z', inputTokens: 2000, outputTokens: 200, costUsd: 0 }
+    ],
+    config: {
+      quotaBudgetUsd: null, quotaBudgetTokens: 20_000, staleAfterMs: 300_000,
+      smoothingWindowMs: 3_600_000, resetWindowSeconds: 18_000, safetyMargin: 0.1
+    }
+  });
+  const aggregate = aggregateQuota([tokenOnly], { nowMs, safetyMargin: 0.1 });
+  assert.equal(aggregate.signal, 'speed_up');
+  assert.equal(aggregate.signalSource, 'tokens');
 });
 
 for (const invalidPercent of [-10, 101]) {

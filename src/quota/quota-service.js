@@ -216,7 +216,8 @@ export function buildQuotaSummary(snapshot) {
         reasons: aggregate.remainingTokensReasons || []
       },
       nextResetAt: aggregate.nextResetAt || null,
-      signal: aggregate.signal || 'unavailable'
+      signal: aggregate.signal || 'unavailable',
+      signalSource: aggregate.signalSource || 'unavailable'
     },
     accounts: accounts.map(account => ({
       account: account.account,

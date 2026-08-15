@@ -99,6 +99,19 @@
 - full web schema: `curl -sS 'http://127.0.0.1:18181/api/quota?refresh=true'`
 - CLI from this checkout: `CLIGATE_URL=http://127.0.0.1:18181 node bin/cli.js quota --refresh`
 
+## manager decision
+
+- start with the API help response, then run its summary command
+- read `aggregate.signal` only when `signalSource` is not `unavailable`
+  - `slow_down`: prioritize important tasks and pause or defer discretionary token-heavy work
+  - `on_track`: keep the current workload
+  - `speed_up`: run useful deferred work or increase safe parallel work before quota resets unused
+  - `unavailable`: inspect reliability, reasons, receipt completeness, and contributor counts; favor important work until target and actual rates are comparable
+- target rate spreads estimated remaining capacity, after the safety margin, over time until `nextResetAt`
+- actual rate is counted receipt velocity over the smoothing window
+- refresh after a material task or account-state change
+- numeric remaining-token estimates are still best-effort; use reliability metadata to decide how much safety margin to keep
+
 ## rollback
 
 - keep the current npm deployment directory and configuration unchanged

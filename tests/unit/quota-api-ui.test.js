@@ -34,6 +34,17 @@ test('quota API returns one credential-free versioned schema and accepts safe co
     accounts: [{ email: 'quota@example.test', enabled: true, planType: 'plus' }]
   }));
   const { startServer } = await import('../../src/server.js');
+  const { buildUnavailableQuotaSummary } = await import('../../src/routes/quota-route.js');
+  const fallback = buildUnavailableQuotaSummary();
+  assert.equal(fallback.state, 'unavailable');
+  assert.equal(fallback.aggregate.signal, 'unavailable');
+  assert.equal(fallback.aggregate.signalSource, 'unavailable');
+  assert.equal(fallback.aggregate.estimated.remainingTokens, 0);
+  assert.equal(fallback.aggregate.estimated.reliable, false);
+  assert.deepEqual(fallback.aggregate.estimated.reasons, [
+    'quota_snapshot_unavailable', 'conservative_zero_fallback'
+  ]);
+  assert.equal(fallback.links.help, '/api/quota/help');
   const server = startServer({ port: 0 });
   await new Promise(resolve => server.once('listening', resolve));
   t.after(() => server.close());
@@ -67,6 +78,7 @@ test('quota API returns one credential-free versioned schema and accepts safe co
   assert.equal(summary.aggregate.counted.tokenVelocityAccountCount, 0);
   assert.equal(summary.aggregate.counted.actualVelocityUsdPerSecond, null);
   assert.equal(summary.aggregate.counted.dollarVelocityAccountCount, 0);
+  assert.equal(summary.aggregate.signalSource, 'unavailable');
   assert.equal(summary.accounts[0].measured.usedPercent, null);
   assert.equal(summary.accounts[0].measured.windowSeconds, 18_000);
   assert.equal(summary.accounts[0].counted.usedTokens, 0);
@@ -82,9 +94,17 @@ test('quota API returns one credential-free versioned schema and accepts safe co
   assert.equal(helpResponse.status, 200);
   const apiHelp = await helpResponse.json();
   assert.match(apiHelp.commands.summary, /curl -sS .*\/api\/quota\/summary\?refresh=true/);
+  assert.match(apiHelp.commands.help, /curl -sS .*\/api\/quota\/help/);
   assert.match(apiHelp.fields.measured, /Provider-reported/);
   assert.match(apiHelp.fields.counted, /complete=false/);
   assert.match(apiHelp.fields.estimated, /Numeric remaining-token/);
+  assert.deepEqual(apiHelp.planning.rules.map(rule => rule.signal), [
+    'slow_down', 'on_track', 'speed_up', 'unavailable'
+  ]);
+  assert.match(apiHelp.planning.rules[0].action, /Prioritize important tasks/);
+  assert.match(apiHelp.planning.rules[2].action, /useful deferred work/);
+  assert.match(apiHelp.planning.guardrail, /signalSource/);
+  assert.match(apiHelp.planning.guardrail, /contributor counts/);
   assert.doesNotMatch(JSON.stringify(apiHelp), /\bjq\b/i);
   const untrustedHostHelp = await fetch(`${baseUrl}/api/quota/help`, {
     headers: { host: "bad.example'; echo injected; '" }
