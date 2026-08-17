@@ -7,7 +7,7 @@ export class SequentialStrategy extends BaseStrategy {
         this.nextIndex = 0;
     }
 
-    selectAccount(accounts, modelId) {
+    selectAccount(accounts, modelId, options = {}) {
         if (!accounts || accounts.length === 0) {
             return { account: null, index: 0, waitMs: 0 };
         }
@@ -20,7 +20,7 @@ export class SequentialStrategy extends BaseStrategy {
             const checkIndex = (this.nextIndex + i) % accounts.length;
             const account = accounts[checkIndex];
 
-            if (this.isAccountUsable(account, modelId)) {
+            if (this.isAccountUsable(account, modelId, options)) {
                 account.lastUsed = Date.now();
                 this.nextIndex = (checkIndex + 1) % accounts.length;
                 logger.debug(`SequentialStrategy: Using account at index ${checkIndex}`);

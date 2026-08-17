@@ -19,8 +19,9 @@ export class BaseStrategy {
 
     onFailure(account, modelId) {}
 
-    isAccountUsable(account, modelId) {
+    isAccountUsable(account, modelId, options = {}) {
         if (!account) return false;
+        if (options.excludeEmails?.has(account.email)) return false;
         if (account.isInvalid) return false;
         if (account.enabled === false) return false;
         if (isAccountCoolingDown(account)) return false;
@@ -36,10 +37,10 @@ export class BaseStrategy {
         return true;
     }
 
-    getUsableAccounts(accounts, modelId) {
+    getUsableAccounts(accounts, modelId, options = {}) {
         const usable = [];
         for (let i = 0; i < accounts.length; i++) {
-            if (this.isAccountUsable(accounts[i], modelId)) {
+            if (this.isAccountUsable(accounts[i], modelId, options)) {
                 usable.push({ account: accounts[i], index: i });
             }
         }

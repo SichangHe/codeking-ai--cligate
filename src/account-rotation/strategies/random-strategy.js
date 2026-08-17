@@ -6,12 +6,12 @@ export class RandomStrategy extends BaseStrategy {
         super(config, 'random');
     }
 
-    selectAccount(accounts, modelId) {
+    selectAccount(accounts, modelId, options = {}) {
         if (!accounts || accounts.length === 0) {
             return { account: null, index: 0, waitMs: 0 };
         }
 
-        const usable = this.getUsableAccounts(accounts, modelId);
+        const usable = this.getUsableAccounts(accounts, modelId, options);
         if (usable.length === 0) {
             return { account: null, index: 0, waitMs: 0 };
         }

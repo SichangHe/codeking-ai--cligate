@@ -22,6 +22,8 @@ import {
     incrementConsecutiveFailures,
     CooldownReason
 } from '../src/account-rotation/rate-limits.js';
+import { SequentialStrategy } from '../src/account-rotation/strategies/sequential-strategy.js';
+import { RandomStrategy } from '../src/account-rotation/strategies/random-strategy.js';
 
 console.log('Running account-rotation tests...\n');
 
@@ -104,6 +106,15 @@ test('getAvailableAccounts: should exclude accounts cooling down', () => {
     
     const result = getAvailableAccounts(accounts, 'gpt-5.2');
     assert.strictEqual(result.length, 2);
+});
+
+test('strategies exclude only model-unavailable accounts and retain short-retry eligibility', () => {
+    const excluded = new Set(['account1@test.com']);
+    const sequential = new SequentialStrategy();
+    assert.strictEqual(sequential.selectAccount(accounts, 'gpt-5.5', { excludeEmails: excluded }).account.email, 'account2@test.com');
+    assert.strictEqual(sequential.selectAccount([accounts[0]], 'gpt-5.5').account.email, 'account1@test.com');
+    const random = new RandomStrategy();
+    assert.strictEqual(random.selectAccount([accounts[0], accounts[1]], 'gpt-5.5', { excludeEmails: excluded }).account.email, 'account2@test.com');
 });
 
 test('markRateLimited: should mark account as rate-limited', () => {

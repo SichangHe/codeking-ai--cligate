@@ -61,6 +61,8 @@ const UPSTREAM_BASE = 'https://chatgpt.com/backend-api';
 const MAX_RETRIES = 5;
 const MAX_WAIT_BEFORE_ERROR_MS = 120000;
 const SHORT_RATE_LIMIT_THRESHOLD_MS = 5000;
+const CODEX_MODEL_DISCOVERY_TIMEOUT_MS = 15000;
+const CODEX_MODEL_DISCOVERY_CONCURRENCY = 3;
 const PASSTHROUGH_REQUEST_HEADER_WHITELIST = [
     'x-client-request-id',
     'x-openai-subagent',
@@ -1242,6 +1244,7 @@ async function _handleCodexViaApiKey(res, body, modelId, isStreaming, keyTypes, 
 async function _handleCodexViaAccountPool(req, res, body, rawBody, modelId, isStreaming, startTime) {
     const rotator = getAccountRotator();
     rotator.clearExpiredLimits();
+    const modelUnavailableAccounts = new Set();
 
     const maxAttempts = Math.max(MAX_RETRIES, listAccounts().total);
 
@@ -1258,12 +1261,11 @@ async function _handleCodexViaAccountPool(req, res, body, rawBody, modelId, isSt
             continue;
         }
 
-        const { account, waitMs } = rotator.selectAccount(modelId);
+        const { account, waitMs } = rotator.selectAccount(modelId, { excludeEmails: modelUnavailableAccounts });
         if (!account) {
             if (waitMs > 0) { await sleep(waitMs); attempt--; continue; }
             return false; // No accounts available
         }
-
         const creds = await getCredentialsForAccount(account.email);
         if (!creds) {
             rotator.markInvalid(account.email, 'Failed to get credentials');
@@ -1315,6 +1317,17 @@ async function _handleCodexViaAccountPool(req, res, body, rawBody, modelId, isSt
                     }
 
                     logger.info(`[Codex] Rate limited on ${creds.email} (${Math.round(resetMs / 1000)}s), switching account...`);
+                    continue;
+                }
+
+                // A model can be present on another account in the pool even
+                // when this account's current catalog/access policy rejects it.
+                // Try the remaining accounts before exposing a transient
+                // model-unavailable error to the Codex CLI.
+                if (upstreamResponse.status === 403 || upstreamResponse.status === 404) {
+                    modelUnavailableAccounts.add(account.email);
+                    rotator.notifyFailure(account, modelId);
+                    logger.warn(`[Codex] Model ${modelId} unavailable on ${creds.email}, trying next account...`);
                     continue;
                 }
 
@@ -1391,16 +1404,88 @@ async function _handleCodexViaAccountPool(req, res, body, rawBody, modelId, isSt
 
 /**
  * GET /backend-api/codex/models
- * Proxies model listing with account rotation.
+ * Returns the union of model listings from the usable ChatGPT account pool.
+ * A single account can be temporarily missing a model even when another pool
+ * account can service it, so selecting one account here makes the Codex CLI's
+ * discovery list spuriously depend on rotation order.
  * Falls back to a synthetic model list when only API keys are available.
  */
+export async function collectCodexModelsForAccounts(accounts, clientVersion, {
+    getCredentials = getCredentialsForAccount,
+    request = fetch
+} = {}) {
+    const modelsBySlug = new Map();
+    const failures = [];
+    let successfulAccounts = 0;
+    let envelope = null;
+
+    const discoveries = await mapWithConcurrency(accounts, CODEX_MODEL_DISCOVERY_CONCURRENCY, async (account) => {
+        const creds = await getCredentials(account.email);
+        if (!creds) {
+            return { failure: { status: 401, body: 'No credentials for account' } };
+        }
+
+        try {
+            const upstreamResponse = await request(`${UPSTREAM_BASE}/codex/models?client_version=${clientVersion}`, {
+                method: 'GET',
+                headers: {
+                    'Authorization': `Bearer ${creds.accessToken}`,
+                    'ChatGPT-Account-ID': creds.accountId,
+                    'Accept': 'application/json'
+                },
+                signal: AbortSignal.timeout(CODEX_MODEL_DISCOVERY_TIMEOUT_MS)
+            });
+            const body = await upstreamResponse.text();
+            if (!upstreamResponse.ok) {
+                return { failure: { status: upstreamResponse.status, body } };
+            }
+
+            const parsed = JSON.parse(body);
+            if (!Array.isArray(parsed?.models)) {
+                return { failure: { status: 502, body: 'Upstream model response did not contain models' } };
+            }
+            return { parsed };
+        } catch (error) {
+            return { failure: { status: 502, body: `Failed to fetch models: ${error.message}` } };
+        }
+    });
+
+    for (const discovery of discoveries) {
+        if (discovery.failure) {
+            failures.push(discovery.failure);
+            continue;
+        }
+        successfulAccounts++;
+        if (!envelope) envelope = discovery.parsed;
+        for (const model of discovery.parsed.models) {
+            if (model?.slug && !modelsBySlug.has(model.slug)) modelsBySlug.set(model.slug, model);
+        }
+    }
+
+    return { models: [...modelsBySlug.values()], envelope, successfulAccounts, failures };
+}
+
+export async function mapWithConcurrency(values, concurrency, mapper) {
+    const results = new Array(values.length);
+    let nextIndex = 0;
+    const workerCount = Math.min(concurrency, values.length);
+    await Promise.all(Array.from({ length: workerCount }, async () => {
+        while (true) {
+            const index = nextIndex++;
+            if (index >= values.length) return;
+            results[index] = await mapper(values[index], index);
+        }
+    }));
+    return results;
+}
+
 export async function handleCodexModels(req, res) {
-    const creds = await _getAnyCreds();
+    const accounts = listAccounts().accounts.filter((account) => account.enabled !== false);
     const antigravityModels = getAllAntigravityModels();
     const settings = getServerSettings();
     const strictCodexCompatibility = settings.strictCodexCompatibility !== false;
 
-    if (!creds) {
+    if (accounts.length === 0) {
         if (strictCodexCompatibility) {
             const models = getStrictNativeCodexModels();
             if (models.length > 0) {
@@ -1426,43 +1511,24 @@ export async function handleCodexModels(req, res) {
     }
 
     const clientVersion = req.query.client_version || '0.116.0';
-    const url = `${UPSTREAM_BASE}/codex/models?client_version=${clientVersion}`;
+    const result = await collectCodexModelsForAccounts(accounts, clientVersion);
+    if (result.successfulAccounts === 0) {
+        const failure = result.failures[0] || { status: 502, body: 'Failed to fetch models from all available accounts' };
+        logger.error(`[Codex] Models fetch failed for all ${accounts.length} available accounts`);
+        return res.status(failure.status)
+            .set('Content-Type', 'application/json')
+            .send(failure.body);
+    }
 
-    try {
-        const upstreamResponse = await fetch(url, {
-            method: 'GET',
-            headers: {
-                'Authorization': `Bearer ${creds.accessToken}`,
-                'ChatGPT-Account-ID': creds.accountId,
-                'Accept': 'application/json'
-            }
-        });
-
-        if (!upstreamResponse.ok) {
-            const errorText = await upstreamResponse.text();
-            logger.error(`[Codex] Models fetch failed: ${upstreamResponse.status}`);
-            return res.status(upstreamResponse.status)
-                .set('Content-Type', 'application/json')
-                .send(errorText);
-        }
-
-        const responseBody = await upstreamResponse.text();
-        const parsed = JSON.parse(responseBody);
-        if (!strictCodexCompatibility && Array.isArray(parsed?.models) && antigravityModels.length > 0) {
-            const seen = new Set(parsed.models.map((model) => model.slug));
+    const models = result.models;
+    if (!strictCodexCompatibility && antigravityModels.length > 0) {
+            const seen = new Set(models.map((model) => model.slug));
             for (const model of antigravityModels) {
                 if (seen.has(model.id)) continue;
-                parsed.models.push({ slug: model.id, name: model.description || model.id, tags: ['antigravity'] });
+                models.push({ slug: model.id, name: model.description || model.id, tags: ['antigravity'] });
             }
-            res.setHeader('Content-Type', 'application/json');
-            return res.send(JSON.stringify(parsed));
-        }
-        res.setHeader('Content-Type', 'application/json');
-        res.send(responseBody);
-    } catch (error) {
-        logger.error(`[Codex] Models fetch error: ${error.message}`);
-        return sendCodexError(res, 502, `Failed to fetch models: ${error.message}`);
     }
+    res.json({ ...result.envelope, models });
 }
 
 /**
