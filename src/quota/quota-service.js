@@ -8,6 +8,7 @@ import {
   isRoutableAccount,
   TOKEN_ESTIMATE_NOTE
 } from './quota-calculator.js';
+import { buildQuotaForecast } from './quota-forecast-watch.js';
 import { createQuotaStore } from './quota-store.js';
 
 const store = createQuotaStore();
@@ -111,8 +112,11 @@ function receiptsFor(email, { fromMs, throughMs }) {
   };
 }
 
-export function buildQuotaSnapshot({ nowMs = Date.now() } = {}) {
+export function buildQuotaSnapshot({ nowMs = Date.now(), smoothingWindowMs = null } = {}) {
   const config = store.getConfig();
+  const effectiveSmoothingWindowMs = Number.isFinite(Number(smoothingWindowMs)) && Number(smoothingWindowMs) > 0
+    ? Number(smoothingWindowMs)
+    : config.smoothingWindowMs;
   const accounts = (loadAccounts().accounts || []).filter(isRoutableAccount).map(account => {
     const override = config.accountOverrides[account.email] || {};
     const providerConfig = config.providers.codex;
@@ -133,7 +137,7 @@ export function buildQuotaSnapshot({ nowMs = Date.now() } = {}) {
     });
     const windowStartMs = Number.isFinite(resetAtMs) && Number.isFinite(Number(resetWindowSeconds))
       ? resetAtMs - Number(resetWindowSeconds) * 1000
-      : nowMs - config.smoothingWindowMs;
+      : nowMs - effectiveSmoothingWindowMs;
     const receiptData = receiptsFor(account.email, { fromMs: windowStartMs, throughMs: nowMs });
     return computeAccountQuota({
       account: { email: account.email, provider: 'codex', planType: account.planType },
@@ -142,6 +146,7 @@ export function buildQuotaSnapshot({ nowMs = Date.now() } = {}) {
       receiptCoverage: receiptData.coverage,
       config: {
         ...config,
+        smoothingWindowMs: effectiveSmoothingWindowMs,
         quotaBudgetUsd: override.quotaBudgetUsd ?? providerConfig.quotaBudgetUsd,
         quotaBudgetTokens: override.quotaBudgetTokens ?? providerConfig.quotaBudgetTokens,
         resetWindowSeconds: configuredWindowSeconds
@@ -159,11 +164,12 @@ export function buildQuotaSnapshot({ nowMs = Date.now() } = {}) {
     config: {
       pollingIntervalMs: config.pollingIntervalMs,
       staleAfterMs: config.staleAfterMs,
-      smoothingWindowMs: config.smoothingWindowMs,
+      smoothingWindowMs: effectiveSmoothingWindowMs,
       retentionDays: config.retentionDays,
       maxHistoryEntries: config.maxHistoryEntries,
       safetyMargin: config.safetyMargin,
       providers: config.providers,
+      forecastWatch: config.forecastWatch,
       accountOverrides: config.accountOverrides
     }
   };
@@ -267,6 +273,45 @@ export async function getQuotaSnapshot({ refresh = false } = {}) {
 
 export async function getQuotaSummary({ refresh = false } = {}) {
   return buildQuotaSummary(await getQuotaSnapshot({ refresh }));
+}
+
+function requestedForecastWindowMs(value, fallback) {
+  const hours = Number(value);
+  if (hours === 1) return 60 * 60 * 1000;
+  if (hours === 2) return 2 * 60 * 60 * 1000;
+  return fallback;
+}
+
+export async function getQuotaForecast({ refresh = false, notify = false, windowHours = null, nowMs = Date.now() } = {}) {
+  if (refresh || Object.keys(store.getStatuses()).length === 0) await refreshQuotaStatuses({ force: refresh });
+  const config = store.getConfig();
+  const forecastConfig = {
+    ...config.forecastWatch,
+    windowMs: requestedForecastWindowMs(windowHours, config.forecastWatch.windowMs)
+  };
+  const snapshot = buildQuotaSnapshot({ nowMs, smoothingWindowMs: forecastConfig.windowMs });
+  const previousState = store.getForecastWatchState();
+  const forecast = buildQuotaForecast(snapshot, {
+    nowMs,
+    config: forecastConfig,
+    previousNotification: previousState.lastNotification
+  });
+  if (notify) {
+    store.setForecastWatchState({
+      ...previousState,
+      lastCheckedAt: new Date(nowMs).toISOString(),
+      lastSignal: forecast.signal,
+      lastNotification: forecast.notification.shouldNotify
+        ? {
+            key: forecast.notification.key,
+            signal: forecast.signal,
+            notifiedAt: new Date(nowMs).toISOString(),
+            managerGuidePath: forecast.notification.managerGuidePath
+          }
+        : previousState.lastNotification || null
+    });
+  }
+  return forecast;
 }
 
 export function getQuotaHistory(limit) { return store.getHistory(limit); }

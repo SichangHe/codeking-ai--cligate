@@ -1,6 +1,7 @@
 import {
   getQuotaSnapshot,
   getQuotaSummary,
+  getQuotaForecast,
   getQuotaHistory,
   getQuotaConfig,
   updateQuotaConfig,
@@ -74,6 +75,7 @@ export function handleGetQuotaHelp(req, res) {
     purpose: 'Read measured provider quota, counted proxy tokens, and best-effort token estimates without post-processing.',
     commands: {
       summary: `curl -sS '${origin}/api/quota/summary?refresh=true'`,
+      forecast: `curl -sS '${origin}/api/quota/forecast?refresh=true&windowHours=1'`,
       help: `curl -sS '${origin}/api/quota/help'`
     },
     endpoints: [
@@ -81,6 +83,11 @@ export function handleGetQuotaHelp(req, res) {
         method: 'GET',
         path: '/api/quota/summary?refresh=true',
         use: 'Refresh provider status and return the concise manager/agent view. Omit refresh=true to use cached status.'
+      },
+      {
+        method: 'GET',
+        path: '/api/quota/forecast?refresh=true&windowHours=1',
+        use: 'Experimental separate watcher view: forecast one- or two-hour token pace to reset and return manager notification/debounce state.'
       },
       { method: 'GET', path: '/api/quota', use: 'Return the full web-compatible quota snapshot.' },
       { method: 'GET', path: '/api/quota/help', use: 'Return these commands and field meanings.' }
@@ -103,8 +110,27 @@ export function handleGetQuotaHelp(req, res) {
       ],
       guardrail: 'Use aggregate guidance only when signalSource is not unavailable. Different target and velocity contributor sets, including different contributor counts, make rates non-comparable and suppress guidance.'
     },
+    forecastWatch: {
+      objective: 'Use quota close to expiry without exhausting it early.',
+      target: 'Notify only when the one- or two-hour token pace is outside the experimental 70-95% pace-to-expiry band.',
+      debounce: 'Notification state has a one-hour minimum debounce and suppresses duplicate same-signal messages inside that window.',
+      delivery: 'The endpoint returns the notification decision for the manager-side scheduler/caller; it does not send a human email or create another manager lane by itself.',
+      managerGuidePath: 'docs/codex/cligate-quota-forecast-watch.draft.md'
+    },
     estimateNote: `${TOKEN_ESTIMATE_NOTE} Model, task complexity, context, reasoning, tools, retrieval, and caching can change actual usage.`
   });
+}
+
+export async function handleGetQuotaForecast(req, res) {
+  try {
+    res.json(await getQuotaForecast({
+      refresh: req.query.refresh === 'true',
+      notify: req.query.notify === 'true',
+      windowHours: req.query.windowHours
+    }));
+  } catch {
+    res.status(503).json({ schemaVersion: 1, state: 'unavailable', error: 'quota_forecast_unavailable' });
+  }
 }
 
 export function handleGetQuotaHistory(req, res) {

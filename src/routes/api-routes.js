@@ -24,6 +24,7 @@ import { handleGetPricing, handleUpdatePricing, handleResetPricing } from './pri
 import {
   handleGetQuotaSnapshot,
   handleGetQuotaSummary,
+  handleGetQuotaForecast,
   handleGetQuotaHelp,
   handleGetQuotaHistory,
   handleGetQuotaConfig,
@@ -438,6 +439,7 @@ export function registerApiRoutes(app, { port }) {
   // ─── Quota Planning ───────────────────────────────────────────────────────
   app.get('/api/quota', handleGetQuotaSnapshot);
   app.get('/api/quota/summary', handleGetQuotaSummary);
+  app.get('/api/quota/forecast', handleGetQuotaForecast);
   app.get('/api/quota/help', handleGetQuotaHelp);
   app.get('/api/quota/history', handleGetQuotaHistory);
   app.get('/api/quota/config', handleGetQuotaConfig);

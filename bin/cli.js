@@ -36,6 +36,8 @@ COMMANDS:
   quota                 Show quota, velocity, reset, and guidance
   quota --refresh       Refresh provider status before display
   quota --json          Print the quota API schema
+  quota forecast         Experimental quota forecast watcher output
+  quota forecast --notify  Persist debounce state when notification is due
 
 OPTIONS:
   --help, -h            Show this help message
@@ -50,6 +52,7 @@ EXAMPLES:
   cligate accounts add
   cligate accounts add --no-browser
   cligate quota
+  cligate quota forecast --refresh --window-hours=1
 
 DASHBOARD:
   Open http://localhost:8081 to:

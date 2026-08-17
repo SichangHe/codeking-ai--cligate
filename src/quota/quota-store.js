@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { CONFIG_DIR } from '../account-manager.js';
 import { retainHistory } from './quota-calculator.js';
+import { normalizeForecastConfig } from './quota-forecast-watch.js';
 
 export const DEFAULT_QUOTA_CONFIG = {
   schemaVersion: 1,
@@ -13,6 +14,13 @@ export const DEFAULT_QUOTA_CONFIG = {
   safetyMargin: 0.15,
   providers: {
     codex: { enabled: true, quotaBudgetUsd: null, quotaBudgetTokens: null, resetWindowSeconds: 5 * 60 * 60 }
+  },
+  forecastWatch: {
+    windowMs: 60 * 60 * 1000,
+    minPace: 0.70,
+    maxPace: 0.95,
+    debounceMs: 60 * 60 * 1000,
+    managerGuidePath: 'docs/codex/cligate-quota-forecast-watch.draft.md'
   },
   accountOverrides: {}
 };
@@ -73,6 +81,7 @@ function normalizeConfig(value) {
         resetWindowSeconds: finiteOr(codex.resetWindowSeconds, DEFAULT_QUOTA_CONFIG.providers.codex.resetWindowSeconds, { min: 60, max: 31_536_000 })
       }
     },
+    forecastWatch: normalizeForecastConfig(input.forecastWatch || DEFAULT_QUOTA_CONFIG.forecastWatch),
     accountOverrides: normalizedOverrides
   };
 }
@@ -82,16 +91,19 @@ export function createQuotaStore({ configDir = CONFIG_DIR, now = () => Date.now(
   const configFile = join(configDir, 'quota-config.json');
   const statusFile = join(configDir, 'quota-status.json');
   const historyFile = join(configDir, 'quota-history.json');
+  const forecastStateFile = join(configDir, 'quota-forecast-watch-state.json');
   let config = normalizeConfig(readJson(configFile, DEFAULT_QUOTA_CONFIG));
   let statuses = readJson(statusFile, {});
   const storedHistory = readJson(historyFile, []);
   let history = Array.isArray(storedHistory) ? storedHistory : [];
+  let forecastWatchState = readJson(forecastStateFile, {});
 
   function save() {
     writeFileSync(configFile, JSON.stringify(config, null, 2), { mode: 0o600 });
     writeFileSync(statusFile, JSON.stringify(statuses, null, 2), { mode: 0o600 });
     history = retainHistory(history, { nowMs: now(), retentionDays: config.retentionDays, maxEntries: config.maxHistoryEntries });
     writeFileSync(historyFile, JSON.stringify(history), { mode: 0o600 });
+    writeFileSync(forecastStateFile, JSON.stringify(forecastWatchState, null, 2), { mode: 0o600 });
   }
 
   return {
@@ -101,6 +113,7 @@ export function createQuotaStore({ configDir = CONFIG_DIR, now = () => Date.now(
         ...config,
         ...(next || {}),
         providers: { codex: { ...config.providers.codex, ...(next?.providers?.codex || {}) } },
+        forecastWatch: { ...config.forecastWatch, ...(next?.forecastWatch || {}) },
         accountOverrides: next?.accountOverrides ?? config.accountOverrides
       });
       save();
@@ -118,6 +131,12 @@ export function createQuotaStore({ configDir = CONFIG_DIR, now = () => Date.now(
       save();
     },
     getHistory(limit = 200) { return clone(history.slice(0, Math.max(0, Math.min(1000, Number(limit) || 200)))); },
+    getForecastWatchState() { return clone(forecastWatchState); },
+    setForecastWatchState(next) {
+      forecastWatchState = next && typeof next === 'object' ? clone(next) : {};
+      save();
+      return clone(forecastWatchState);
+    },
     flush: save
   };
 }

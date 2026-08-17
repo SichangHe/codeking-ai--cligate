@@ -43,12 +43,14 @@
 - consumers
   - `GET /api/quota`
   - `GET /api/quota/summary[?refresh=true]`
+  - `GET /api/quota/forecast[?refresh=true&windowHours=1|2&notify=true]`
   - `GET /api/quota/help`
   - `GET /api/quota/history`
   - `GET|PUT /api/quota/config`
   - `POST /api/quota/refresh`
   - usage web view
   - `cligate quota [--refresh] [--json]`
+  - `cligate quota forecast [--refresh] [--window-hours=1|2] [--notify] [--json]`
 
 ## configuration
 
@@ -98,6 +100,7 @@
 - API help: `curl -sS 'http://127.0.0.1:18181/api/quota/help'`
 - full web schema: `curl -sS 'http://127.0.0.1:18181/api/quota?refresh=true'`
 - CLI from this checkout: `CLIGATE_URL=http://127.0.0.1:18181 node bin/cli.js quota --refresh`
+- experimental forecast watcher: `CLIGATE_URL=http://127.0.0.1:18181 node bin/cli.js quota forecast --refresh --window-hours=1`
 
 ## manager decision
 
@@ -111,6 +114,24 @@
 - actual rate is counted receipt velocity over the smoothing window
 - refresh after a material task or account-state change
 - numeric remaining-token estimates are still best-effort; use reliability metadata to decide how much safety margin to keep
+
+## experimental forecast watcher
+
+- this is separate from the summary endpoint and does not replace manager policy
+- endpoint: `GET /api/quota/forecast?refresh=true&windowHours=1`
+- allowed windows: one or two hours
+- forecast: projects current receipt velocity to the provider reset time
+- target: actual token pace should stay between 70% and 95% of pace-to-expiry
+- notifications:
+  - notify the main manager only for `too_fast` or `too_slow`
+  - do not notify for `on_track` or `unavailable`
+  - the endpoint/CLI emits the notification decision; the manager-side scheduler or caller owns delivery to the main manager
+  - `notify=true` persists notification state
+  - duplicate same-signal notifications are suppressed for at least one hour
+- manager guidance:
+  - `too_fast`: slow discretionary token-heavy work through existing owners; preserve essential work and human-owned panes
+  - `too_slow`: pull useful deferred work through existing owners when it is safe and bounded
+  - full guidance remains a draft at `docs/codex/cligate-quota-forecast-watch.draft.md` until the human approves it
 
 ## rollback
 

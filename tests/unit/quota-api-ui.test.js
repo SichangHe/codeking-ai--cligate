@@ -94,6 +94,7 @@ test('quota API returns one credential-free versioned schema and accepts safe co
   assert.equal(helpResponse.status, 200);
   const apiHelp = await helpResponse.json();
   assert.match(apiHelp.commands.summary, /curl -sS .*\/api\/quota\/summary\?refresh=true/);
+  assert.match(apiHelp.commands.forecast, /curl -sS .*\/api\/quota\/forecast\?refresh=true&windowHours=1/);
   assert.match(apiHelp.commands.help, /curl -sS .*\/api\/quota\/help/);
   assert.match(apiHelp.fields.measured, /Provider-reported/);
   assert.match(apiHelp.fields.counted, /complete=false/);
@@ -105,6 +106,8 @@ test('quota API returns one credential-free versioned schema and accepts safe co
   assert.match(apiHelp.planning.rules[2].action, /useful deferred work/);
   assert.match(apiHelp.planning.guardrail, /signalSource/);
   assert.match(apiHelp.planning.guardrail, /contributor counts/);
+  assert.equal(apiHelp.forecastWatch.managerGuidePath, 'docs/codex/cligate-quota-forecast-watch.draft.md');
+  assert.match(apiHelp.forecastWatch.delivery, /manager-side scheduler/);
   assert.doesNotMatch(JSON.stringify(apiHelp), /\bjq\b/i);
   const untrustedHostHelp = await fetch(`${baseUrl}/api/quota/help`, {
     headers: { host: "bad.example'; echo injected; '" }
@@ -124,6 +127,15 @@ test('quota API returns one credential-free versioned schema and accepts safe co
   assert.match(cli.stdout, /remaining unavailable \| target unavailable \(0 accounts\) \| actual unavailable \(0 accounts\)/);
   assert.match(cli.stdout, /quota@example\.test: provider usage unavailable, unavailable; counted/);
   assert.match(cli.stdout, /estimate note: Best-effort estimate; may be unreliable/i);
+
+  const forecastResponse = await fetch(`${baseUrl}/api/quota/forecast?windowHours=2`);
+  assert.equal(forecastResponse.status, 200);
+  const forecast = await forecastResponse.json();
+  assert.equal(forecast.schemaVersion, 1);
+  assert.equal(forecast.experimental, true);
+  assert.equal(forecast.windowMs, 2 * 60 * 60 * 1000);
+  assert.equal(forecast.notification.shouldNotify, false);
+  assert.equal(JSON.stringify(forecast).match(/accessToken|refreshToken|Authorization/), null);
 
   const configResponse = await fetch(`${baseUrl}/api/quota/config`, {
     method: 'PUT', headers: { 'content-type': 'application/json' },
