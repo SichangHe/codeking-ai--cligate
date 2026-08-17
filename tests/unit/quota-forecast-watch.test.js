@@ -40,7 +40,7 @@ test('forecast watcher flags too-fast pace above the target band', () => {
   assert.equal(result.notification.reason, 'pace_outside_target');
 });
 
-test('forecast watcher notifies for too-slow pace and debounces duplicate signals', () => {
+test('forecast watcher suppresses only repeated same-type notifications', () => {
   const first = buildQuotaForecast(snapshot({ actualVelocityTokensPerSecond: 50 }), {
     nowMs,
     config: { minPace: 0.70, maxPace: 0.95 }
@@ -53,19 +53,33 @@ test('forecast watcher notifies for too-slow pace and debounces duplicate signal
     nowMs: nowMs + 30 * 60 * 1000,
     config: { minPace: 0.70, maxPace: 0.95, debounceMs: 60 * 60 * 1000 },
     previousNotification: {
-      key: first.notification.key,
+      type: first.notification.type,
       notifiedAt: new Date(nowMs).toISOString()
     }
   });
   assert.equal(repeated.notification.shouldNotify, false);
+  assert.equal(repeated.notification.sameTypeSuppressed, true);
   assert.equal(repeated.notification.duplicateSuppressed, true);
+  assert.equal(repeated.notification.key, first.notification.key);
   assert.equal(repeated.notification.reason, 'debounced_duplicate');
+
+  const changedType = buildQuotaForecast(snapshot({ actualVelocityTokensPerSecond: 220 }), {
+    nowMs: nowMs + 30 * 60 * 1000,
+    config: { minPace: 0.70, maxPace: 0.95, debounceMs: 60 * 60 * 1000 },
+    previousNotification: {
+      type: first.notification.type,
+      notifiedAt: new Date(nowMs).toISOString()
+    }
+  });
+  assert.equal(changedType.signal, 'too_fast');
+  assert.equal(changedType.notification.shouldNotify, true);
+  assert.equal(changedType.notification.sameTypeSuppressed, false);
 
   const afterDebounce = buildQuotaForecast(snapshot({ actualVelocityTokensPerSecond: 50 }), {
     nowMs: nowMs + 61 * 60 * 1000,
     config: { minPace: 0.70, maxPace: 0.95, debounceMs: 60 * 60 * 1000 },
     previousNotification: {
-      key: first.notification.key,
+      type: first.notification.type,
       notifiedAt: new Date(nowMs).toISOString()
     }
   });

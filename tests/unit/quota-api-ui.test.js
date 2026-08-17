@@ -106,7 +106,7 @@ test('quota API returns one credential-free versioned schema and accepts safe co
   assert.match(apiHelp.planning.rules[2].action, /useful deferred work/);
   assert.match(apiHelp.planning.guardrail, /signalSource/);
   assert.match(apiHelp.planning.guardrail, /contributor counts/);
-  assert.equal(apiHelp.forecastWatch.managerGuidePath, 'docs/codex/cligate-quota-forecast-watch.draft.md');
+  assert.equal(apiHelp.forecastWatch.managerGuidePath, 'docs/codex/cligate-quota-forecast-watch.md');
   assert.match(apiHelp.forecastWatch.delivery, /manager-side scheduler/);
   assert.doesNotMatch(JSON.stringify(apiHelp), /\bjq\b/i);
   const untrustedHostHelp = await fetch(`${baseUrl}/api/quota/help`, {

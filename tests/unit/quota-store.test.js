@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createQuotaStore } from '../../src/quota/quota-store.js';
@@ -21,6 +21,16 @@ test('quota store persists only normalized configuration and bounded observation
   assert.equal(config.forecastWatch.windowMs, 3_600_000);
   assert.equal(config.forecastWatch.minPace, 0.70);
   assert.equal(config.forecastWatch.maxPace, 0.95);
+  assert.equal(config.forecastWatch.managerGuidePath, 'docs/codex/cligate-quota-forecast-watch.md');
+  const legacyConfigDir = mkdtempSync(join(tmpdir(), 'cligate-quota-legacy-config-'));
+  t.after(() => rmSync(legacyConfigDir, { recursive: true, force: true }));
+  writeFileSync(join(legacyConfigDir, 'quota-config.json'), JSON.stringify({
+    forecastWatch: { managerGuidePath: 'docs/codex/cligate-quota-forecast-watch.draft.md' }
+  }));
+  assert.equal(
+    createQuotaStore({ configDir: legacyConfigDir }).getConfig().forecastWatch.managerGuidePath,
+    'docs/codex/cligate-quota-forecast-watch.md'
+  );
   assert.equal('accessToken' in config, false);
   assert.equal('secret' in config.providers.codex, false);
   store.setForecastWatchState({

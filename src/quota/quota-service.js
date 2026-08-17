@@ -303,6 +303,7 @@ export async function getQuotaForecast({ refresh = false, notify = false, window
       lastSignal: forecast.signal,
       lastNotification: forecast.notification.shouldNotify
         ? {
+            type: forecast.notification.type,
             key: forecast.notification.key,
             signal: forecast.signal,
             notifiedAt: new Date(nowMs).toISOString(),

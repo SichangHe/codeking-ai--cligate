@@ -113,9 +113,9 @@ export function handleGetQuotaHelp(req, res) {
     forecastWatch: {
       objective: 'Use quota close to expiry without exhausting it early.',
       target: 'Notify only when the one- or two-hour token pace is outside the experimental 70-95% pace-to-expiry band.',
-      debounce: 'Notification state has a one-hour minimum debounce and suppresses duplicate same-signal messages inside that window.',
+      debounce: 'Notification state has a one-hour minimum debounce and suppresses only repeated notifications of the same type inside that window.',
       delivery: 'The endpoint returns the notification decision for the manager-side scheduler/caller; it does not send a human email or create another manager lane by itself.',
-      managerGuidePath: 'docs/codex/cligate-quota-forecast-watch.draft.md'
+      managerGuidePath: 'docs/codex/cligate-quota-forecast-watch.md'
     },
     estimateNote: `${TOKEN_ESTIMATE_NOTE} Model, task complexity, context, reasoning, tools, retrieval, and caching can change actual usage.`
   });

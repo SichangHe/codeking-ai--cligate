@@ -2,7 +2,8 @@ const DEFAULT_WINDOW_MS = 60 * 60 * 1000;
 const DEFAULT_MIN_PACE = 0.70;
 const DEFAULT_MAX_PACE = 0.95;
 const DEFAULT_DEBOUNCE_MS = 60 * 60 * 1000;
-const DEFAULT_MANAGER_GUIDE = 'docs/codex/cligate-quota-forecast-watch.draft.md';
+const DEFAULT_MANAGER_GUIDE = 'docs/codex/cligate-quota-forecast-watch.md';
+const LEGACY_MANAGER_GUIDE = 'docs/codex/cligate-quota-forecast-watch.draft.md';
 
 function finite(value) {
   if (value === null || value === undefined || value === '') return null;
@@ -32,7 +33,12 @@ function guidanceFor(signal) {
   return 'Do not notify; quota forecast inputs are not comparable enough for a pace decision.';
 }
 
-function duplicateKey({ signal, signalSource, windowMs }) {
+function notificationType(signal) {
+  if (signal !== 'too_fast' && signal !== 'too_slow') return null;
+  return signal;
+}
+
+function legacyNotificationKey({ signal, signalSource, windowMs }) {
   if (signal !== 'too_fast' && signal !== 'too_slow') return null;
   return `${signal}:${signalSource || 'unknown'}:${windowMs}`;
 }
@@ -56,14 +62,15 @@ export function normalizeForecastConfig(input = {}) {
   const windowMs = Number(input.windowMs) === 2 * DEFAULT_WINDOW_MS
     ? 2 * DEFAULT_WINDOW_MS
     : DEFAULT_WINDOW_MS;
+  const managerGuidePath = typeof input.managerGuidePath === 'string' && input.managerGuidePath.trim()
+    ? input.managerGuidePath.trim()
+    : DEFAULT_MANAGER_GUIDE;
   return {
     windowMs,
     minPace: DEFAULT_MIN_PACE,
     maxPace: DEFAULT_MAX_PACE,
     debounceMs: clamp(input.debounceMs, DEFAULT_DEBOUNCE_MS, { min: DEFAULT_DEBOUNCE_MS, max: 24 * DEFAULT_DEBOUNCE_MS }),
-    managerGuidePath: typeof input.managerGuidePath === 'string' && input.managerGuidePath.trim()
-      ? input.managerGuidePath.trim()
-      : DEFAULT_MANAGER_GUIDE
+    managerGuidePath: managerGuidePath === LEGACY_MANAGER_GUIDE ? DEFAULT_MANAGER_GUIDE : managerGuidePath
   };
 }
 
@@ -104,11 +111,12 @@ export function buildQuotaForecast(snapshot, {
       : paceRatio < normalized.minPace
         ? 'too_slow'
         : 'on_track';
-  const key = duplicateKey({ signal, signalSource: 'tokens', windowMs: normalized.windowMs });
+  const type = notificationType(signal);
+  const key = legacyNotificationKey({ signal, signalSource: 'tokens', windowMs: normalized.windowMs });
   const last = previousNotification && typeof previousNotification === 'object' ? previousNotification : {};
   const lastAtMs = parseTime(last.notifiedAt);
-  const duplicate = key !== null && last.key === key;
-  const debounced = duplicate && lastAtMs !== null && nowMs - lastAtMs < normalized.debounceMs;
+  const sameType = type !== null && (last.type === type || last.signal === type);
+  const debounced = sameType && lastAtMs !== null && nowMs - lastAtMs < normalized.debounceMs;
   const shouldNotify = (signal === 'too_fast' || signal === 'too_slow') && !debounced;
   return {
     schemaVersion: 1,
@@ -135,9 +143,11 @@ export function buildQuotaForecast(snapshot, {
       reason: signal === 'too_fast' || signal === 'too_slow'
         ? debounced ? 'debounced_duplicate' : 'pace_outside_target'
         : 'no_notification_for_current_signal',
+      sameTypeSuppressed: Boolean(debounced),
+      type,
       duplicateSuppressed: Boolean(debounced),
       key,
-      nextAllowedAt: duplicate && lastAtMs !== null ? isoOrNull(lastAtMs + normalized.debounceMs) : null,
+      nextAllowedAt: sameType && lastAtMs !== null ? isoOrNull(lastAtMs + normalized.debounceMs) : null,
       managerGuidePath: normalized.managerGuidePath,
       message: shouldNotify
         ? `Quota forecast is ${signal.replace('_', ' ')}; read ${normalized.managerGuidePath}.`

@@ -20,7 +20,7 @@ export const DEFAULT_QUOTA_CONFIG = {
     minPace: 0.70,
     maxPace: 0.95,
     debounceMs: 60 * 60 * 1000,
-    managerGuidePath: 'docs/codex/cligate-quota-forecast-watch.draft.md'
+    managerGuidePath: 'docs/codex/cligate-quota-forecast-watch.md'
   },
   accountOverrides: {}
 };

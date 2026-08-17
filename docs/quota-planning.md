@@ -127,11 +127,11 @@
   - do not notify for `on_track` or `unavailable`
   - the endpoint/CLI emits the notification decision; the manager-side scheduler or caller owns delivery to the main manager
   - `notify=true` persists notification state
-  - duplicate same-signal notifications are suppressed for at least one hour
+  - only another notification of the same type is suppressed for at least one hour; a `too_fast` notification after `too_slow`, or vice versa, is delivered
 - manager guidance:
   - `too_fast`: slow discretionary token-heavy work through existing owners; preserve essential work and human-owned panes
   - `too_slow`: pull useful deferred work through existing owners when it is safe and bounded
-  - full guidance remains a draft at `docs/codex/cligate-quota-forecast-watch.draft.md` until the human approves it
+  - read `docs/codex/cligate-quota-forecast-watch.md`
 
 ## rollback
 
