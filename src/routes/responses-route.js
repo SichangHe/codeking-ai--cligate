@@ -8,7 +8,7 @@
  */
 
 import { AccountRotator } from '../account-rotation/index.js';
-import { listAccounts, getActiveAccount, save } from '../account-manager.js';
+import { listAccounts, loadAccounts, reloadAccounts, getActiveAccount, save } from '../account-manager.js';
 import { getUsableAccounts as getUsableClaudeAccounts, advanceUsableAccountsRotation, refreshAccountToken, getAccount as getClaudeAccount } from '../claude-account-manager.js';
 import { recordClaudeRuntimeObservation } from '../claude-usage.js';
 import { sendClaudeMessageWithMeta, mapToClaudeModel } from '../claude-api.js';
@@ -46,6 +46,7 @@ const UPSTREAM_COMPACT_URL = 'https://chatgpt.com/backend-api/codex/responses/co
 const MAX_RETRIES = 5;
 const MAX_WAIT_BEFORE_ERROR_MS = 120000;
 const SHORT_RATE_LIMIT_THRESHOLD_MS = 5000;
+const MODEL_UNAVAILABLE_COOLDOWN_MS = 15 * 60 * 1000;
 const PASSTHROUGH_REQUEST_HEADER_WHITELIST = [
     'x-client-request-id',
     'x-openai-subagent',
@@ -83,6 +84,8 @@ function getAccountRotator() {
         const accts = listAccounts();
         logger.info(`[Codex Proxy] Initializing rotator: strategy=${strategy}, accounts=${accts.total}, active=${accts.active || 'none'}`);
         accountRotator = new AccountRotator({
+            reloadAccounts,
+            loadAccounts,
             listAccounts,
             save,
             getActiveAccount
@@ -114,6 +117,22 @@ function parseResetTime(response, errorText) {
         if (secMatch) return parseInt(secMatch[1], 10) * 1000;
     }
     return 60000;
+}
+
+export function isCodexChatGptModelUnavailableError(errorText) {
+    const text = String(errorText || '');
+    const modelIdPattern = "(?:gpt|o|codex|chatgpt|claude|gemini|grok|deepseek|qwen|llama|mistral|cursor|auto)[\\w.-]*\\d[\\w.-]*";
+    return new RegExp(`\\b(?:the\\s+)?['"]?${modelIdPattern}['"]?\\s+model\\s+is\\s+not\\s+supported\\s+when\\s+using\\s+Codex\\s+with\\s+a\\s+ChatGPT\\s+account\\b`, 'i').test(text)
+        || new RegExp(`\\bmodel\\s+['"]?${modelIdPattern}['"]?\\s+is\\s+not\\s+supported\\s+when\\s+using\\s+Codex\\s+with\\s+a\\s+ChatGPT\\s+account\\b`, 'i').test(text);
+}
+
+export function getChatGptModelCooldownMs(email, modelId) {
+    if (!email || !modelId) return 0;
+    const accountData = reloadAccounts();
+    const account = accountData?.accounts?.find(candidate => candidate.email === email);
+    const resetTime = account?.modelRateLimits?.[modelId]?.resetTime;
+    if (!resetTime) return 0;
+    return Math.max(0, resetTime - Date.now());
 }
 
 function sleep(ms) {
@@ -527,7 +546,17 @@ async function _handleResponsesAssignment(req, res, assignment, rawBody, content
         logger.info(`[Codex] Assigned binding | app=${assignment.appId} | type=${candidate.credentialType} | target=${targetId}`);
 
         if (candidate.credentialType === 'chatgpt-account') {
-            const result = await _handleResponsesViaAssignedAccount(req, res, rawBody, contentEncoding, modelId, isStreaming, startTime, isCompact, candidate.credential.email);
+            const cooldownMs = getChatGptModelCooldownMs(candidate.credential.email, modelId);
+            if (cooldownMs > 0) {
+                recordAssignmentUpstreamError(assignment, {
+                    type: 'chatgpt-account',
+                    target: candidate.credential.email,
+                    status: 'model_rate_limited',
+                    message: `${modelId} is cooling down on this account for ${Math.ceil(cooldownMs / 1000)}s`
+                });
+                continue;
+            }
+            const result = await _handleResponsesViaAssignedAccount(req, res, rawBody, contentEncoding, modelId, isStreaming, startTime, isCompact, candidate.credential.email, assignment);
             if (result !== false) return result;
             continue;
         }
@@ -710,7 +739,7 @@ async function _handleResponsesViaAssignedClaudeAccount(res, parsed, modelId, is
     }
 }
 
-async function _handleResponsesViaAssignedAccount(req, res, rawBody, contentEncoding, modelId, isStreaming, startTime, isCompact, email) {
+async function _handleResponsesViaAssignedAccount(req, res, rawBody, contentEncoding, modelId, isStreaming, startTime, isCompact, email, assignment = null) {
     const creds = await getCredentialsForAccount(email);
     if (!creds) return false;
 
@@ -725,7 +754,29 @@ async function _handleResponsesViaAssignedAccount(req, res, rawBody, contentEnco
 
         const targetUrl = isCompact ? UPSTREAM_COMPACT_URL : UPSTREAM_URL;
         const upstreamResponse = await fetch(targetUrl, { method: 'POST', headers: upstreamHeaders, body: rawBody });
-        if (!upstreamResponse.ok) return false;
+        if (!upstreamResponse.ok) {
+            const errorText = await upstreamResponse.text();
+            if (isCodexChatGptModelUnavailableError(errorText)) {
+                const rotator = getAccountRotator();
+                rotator.markRateLimited(creds.email, MODEL_UNAVAILABLE_COOLDOWN_MS, modelId);
+                rotator.notifyRateLimit({ email: creds.email }, modelId);
+                recordAssignmentUpstreamError(assignment, {
+                    type: 'chatgpt-account',
+                    target: creds.email,
+                    status: upstreamResponse.status,
+                    message: errorText
+                });
+                logger.warn(`[Codex] Assigned ChatGPT model unavailable for ${creds.email} (${modelId}), trying fallback/next binding: ${errorText.slice(0, 200)}`);
+                return false;
+            }
+            recordAssignmentUpstreamError(assignment, {
+                type: 'chatgpt-account',
+                target: creds.email,
+                status: upstreamResponse.status,
+                message: errorText.slice(0, 200)
+            });
+            return false;
+        }
 
         let usage = null;
         if (isStreaming) {
@@ -1367,6 +1418,13 @@ async function _handleResponsesViaAccountPool(req, res, rawBody, contentEncoding
 
             if (!upstreamResponse.ok) {
                 const errorText = await upstreamResponse.text();
+
+                if (isCodexChatGptModelUnavailableError(errorText)) {
+                    rotator.markRateLimited(creds.email, MODEL_UNAVAILABLE_COOLDOWN_MS, modelId);
+                    rotator.notifyRateLimit(account, modelId);
+                    logger.warn(`[Codex] Model ${modelId} unavailable on ${creds.email}, switching account: ${errorText.slice(0, 200)}`);
+                    continue;
+                }
 
                 if (upstreamResponse.status === 401) {
                     rotator.markInvalid(creds.email, 'Token expired');

@@ -16,35 +16,35 @@ export class AccountRotator {
     }
 
     selectAccount(modelId, options = {}) {
-        const { accounts } = this.accountManager.listAccounts();
+        const { accounts } = this._loadAccountData();
         return this.strategy.selectAccount(accounts, modelId, options);
     }
 
     markRateLimited(email, resetMs, modelId) {
-        const { accounts } = this.accountManager.listAccounts();
+        const { accounts } = this._loadAccountData();
         markRateLimited(accounts, email, resetMs, modelId);
         this.accountManager.save();
     }
 
     markInvalid(email, reason) {
-        const { accounts } = this.accountManager.listAccounts();
+        const { accounts } = this._loadAccountData();
         markInvalid(accounts, email, reason);
         this.accountManager.save();
     }
 
     clearInvalid(email) {
-        const { accounts } = this.accountManager.listAccounts();
+        const { accounts } = this._loadAccountData();
         clearInvalid(accounts, email);
         this.accountManager.save();
     }
 
     isAllRateLimited(modelId) {
-        const { accounts } = this.accountManager.listAccounts();
+        const { accounts } = this._loadAccountData();
         return isAllRateLimited(accounts, modelId);
     }
 
     getMinWaitTimeMs(modelId) {
-        const { accounts } = this.accountManager.listAccounts();
+        const { accounts } = this._loadAccountData();
         return getMinWaitTimeMs(accounts, modelId);
     }
 
@@ -67,9 +67,19 @@ export class AccountRotator {
     }
 
     clearExpiredLimits() {
-        const { accounts } = this.accountManager.listAccounts();
+        const { accounts } = this._loadAccountData();
         clearExpiredLimits(accounts);
         this.accountManager.save();
+    }
+
+    _loadAccountData() {
+        if (typeof this.accountManager.reloadAccounts === 'function') {
+            return this.accountManager.reloadAccounts();
+        }
+        if (typeof this.accountManager.loadAccounts === 'function') {
+            return this.accountManager.loadAccounts();
+        }
+        return this.accountManager.listAccounts();
     }
 
     getStrategyName() {

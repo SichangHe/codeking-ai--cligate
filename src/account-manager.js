@@ -679,6 +679,7 @@ function ensureAccountsPersist() {
 
 export {
     loadAccounts,
+    reloadAccounts,
     saveAccounts,
     save,
     getAccount,
