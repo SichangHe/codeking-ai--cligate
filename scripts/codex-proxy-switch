@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+"""Point every Codex config at CLIProxyAPI or back at CliGate. Never prints a key.
+
+`cliproxyapi` adds a marked model provider to each config and turns off its
+`chatgpt_base_url`, which points at CliGate and stalls Codex when CliGate has no
+usable account; `cligate` undoes both.
+`status` prints which proxy each config uses. Running Codex sessions keep the
+proxy they started with until they restart.
+"""
+import argparse
+import glob
+import os
+import tempfile
+from pathlib import Path
+
+HOME = Path.home()
+KEY = Path(os.environ.get("CLIPROXYAPI_CLIENT_KEY", HOME / ".local/share/cliproxyapi-trial/client-key"))
+MARK = "# codex-proxy-switch"
+OFF = MARK + " off: "
+URL = os.environ.get("CLIPROXYAPI_URL", "http://127.0.0.1:18317/v1")
+
+
+def configs() -> list[Path]:
+    given = os.environ.get("CODEX_CONFIGS")
+    if given:
+        return [Path(path) for path in given.split(":")]
+    found = [HOME / ".codex/config.toml", HOME / ".codex/og.config.toml"]
+    found += [Path(path) for path in glob.glob(str(HOME / ".omnigent/codex-native/*/codex-home/config.toml"))]
+    return [path for path in found if path.exists()]
+
+
+def without_mark(text: str) -> str:
+    """Drop the marked provider lines, whether or not they are present."""
+    kept, inside = [], False
+    for line in text.splitlines():
+        if line == MARK + " begin":
+            inside = True
+        elif line == MARK + " end":
+            inside = False
+        elif not inside and not line.endswith(MARK):
+            kept.append(line.removeprefix(OFF))
+    return "\n".join(kept).rstrip("\n") + "\n"
+
+
+def with_mark(text: str) -> str:
+    block = [
+        MARK + " begin",
+        "[model_providers.cliproxyapi]",
+        'name = "cliproxyapi"',
+        f'base_url = "{URL}"',
+        'wire_api = "responses"',
+        f'experimental_bearer_token = "{KEY.read_text().strip()}"',
+        MARK + " end",
+    ]
+    lines = [OFF + line if line.startswith("chatgpt_base_url") else line for line in without_mark(text).splitlines()]
+    return f'model_provider = "cliproxyapi" {MARK}\n' + "\n".join(lines) + "\n" + "\n".join(block) + "\n"
+
+
+def write_private(path: Path, text: str) -> None:
+    handle, temporary = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".")
+    with os.fdopen(handle, "w") as file:
+        file.write(text)
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, path)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("proxy", choices=["cliproxyapi", "cligate", "status"])
+    proxy = parser.parse_args().proxy
+    counts = {"cliproxyapi": 0, "cligate": 0}
+    for path in configs():
+        text = path.read_text()
+        if proxy != "status":
+            changed = with_mark(text) if proxy == "cliproxyapi" else without_mark(text)
+            if changed != text:
+                write_private(path, changed)
+            text = changed
+        counts["cliproxyapi" if MARK + " begin" in text else "cligate"] += 1
+    print(counts)
+
+
+if __name__ == "__main__":
+    main()
