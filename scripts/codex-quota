@@ -1,0 +1,118 @@
+#!/usr/bin/env python3
+"""Gauge Codex quota spending through CLIProxyAPI and project whether it runs out.
+
+Reads the usage each ChatGPT account last reported to the proxy: percent of a
+quota window used, and seconds until that window resets. Assumes spending
+continues at the window's average rate so far. Never prints an account name.
+
+Exit status: 0 the pool lasts until its windows reset, 1 it is projected to run
+out first (or is already out), 2 cannot tell (proxy unreachable or no fresh data).
+"""
+import argparse
+import json
+import os
+import sys
+import time
+import urllib.request
+from datetime import datetime
+from pathlib import Path
+
+HOME = Path.home()
+URL = os.environ.get("CLIPROXYAPI_URL", "http://127.0.0.1:18317")
+KEY = Path(os.environ.get("CLIPROXYAPI_MANAGEMENT_KEY", HOME / ".local/share/cliproxyapi-trial/management-key"))
+
+
+def hours(seconds: float) -> str:
+    return f"{seconds / 86400:.1f}d" if seconds >= 172800 else f"{seconds / 3600:.1f}h"
+
+
+def windows(signals: dict, age_s: float) -> list[dict]:
+    """The quota windows an account reported, moved forward by the report's age."""
+    found = []
+    for name in ("Primary", "Secondary"):
+        length_s = float(signals.get(f"X-Codex-{name}-Window-Minutes") or 0) * 60
+        if length_s <= 0:
+            continue
+        left_s = float(signals.get(f"X-Codex-{name}-Reset-After-Seconds") or 0) - age_s
+        used = float(signals.get(f"X-Codex-{name}-Used-Percent") or 0)
+        if left_s <= 0:
+            # The window reset after the report, so nothing of the new one is known to be used.
+            used, left_s = 0.0, length_s
+        found.append({"length_s": length_s, "left_s": left_s, "used": used})
+    return found
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--stale-min", type=float, default=60, help="a report older than this many minutes does not count as fresh")
+    parser.add_argument("--json", action="store_true", help="print one JSON object instead of text")
+    args = parser.parse_args()
+    request = urllib.request.Request(URL + "/v0/management/auth-files", headers={"Authorization": "Bearer " + KEY.read_text().strip()})
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            files = json.load(response)["files"]
+    except OSError as error:
+        print(f"codex-quota: cannot read the proxy at {URL}: {error}", file=sys.stderr)
+        return 2
+    now = time.time()
+    rows, fresh = [], 0
+    # Pool totals, in account-percent: 100 is one whole account window.
+    left = rate_per_s = 0.0
+    soonest_reset_s = None
+    for index, file in enumerate(file for file in files if file.get("provider") == "codex"):
+        plan = (file.get("id_token") or {}).get("plan_type") or "?"
+        row = {"account": f"{index}:{plan}", "state": "disabled" if file.get("disabled") else file.get("status")}
+        rows.append(row)
+        quota = file.get("quota") or {}
+        if file.get("disabled") or not quota.get("observed_at"):
+            row["note"] = "no usage report" if not file.get("disabled") else ""
+            continue
+        age_s = now - datetime.fromisoformat(quota["observed_at"]).timestamp()
+        row["report_age_min"] = round(age_s / 60)
+        seen = windows(quota.get("signals") or {}, age_s)
+        if not seen:
+            continue
+        # The window nearest to full decides how much the account can still do.
+        window = max(seen, key=lambda w: w["used"])
+        elapsed_s = window["length_s"] - window["left_s"]
+        row.update(used=window["used"], window=hours(window["length_s"]), resets_in=hours(window["left_s"]))
+        if elapsed_s > 0 and window["used"] < 100:
+            row["projected_at_reset"] = round(window["used"] * window["length_s"] / elapsed_s)
+        if file.get("unavailable") or window["used"] >= 100:
+            row["state"] = "out"
+            continue
+        if age_s <= args.stale_min * 60:
+            fresh += 1
+        left += 100 - window["used"]
+        rate_per_s += window["used"] / elapsed_s if elapsed_s > 0 else 0
+        soonest_reset_s = window["left_s"] if soonest_reset_s is None else min(soonest_reset_s, window["left_s"])
+    runs_out_in_s = left / rate_per_s if rate_per_s > 0 else None
+    if soonest_reset_s is None:
+        verdict, status = "OUT: no account has quota left", 1
+    elif not fresh:
+        verdict, status = f"UNKNOWN: no usage report newer than {args.stale_min:g} min; send one Codex request and rerun", 2
+    elif runs_out_in_s is not None and runs_out_in_s < soonest_reset_s:
+        verdict, status = f"PROJECTED TO RUN OUT in {hours(runs_out_in_s)}, {hours(soonest_reset_s - runs_out_in_s)} before the first reset", 1
+    else:
+        lasts = "no measurable use yet" if runs_out_in_s is None else f"would last {hours(runs_out_in_s)}"
+        verdict, status = f"OK: {lasts}; first reset in {hours(soonest_reset_s)}", 0
+    summary = {"verdict": verdict, "exit": status, "pool_left_account_percent": round(left), "accounts": rows}
+    if args.json:
+        print(json.dumps(summary))
+        return status
+    print(verdict)
+    print(f"pool left: {left:.0f} account-percent (100 = one full account window)")
+    for row in rows:
+        detail = (
+            f"used {row['used']:.0f}% of {row['window']} window, resets in {row['resets_in']}"
+            + (f", projected {row['projected_at_reset']}% at reset" if "projected_at_reset" in row else "")
+            + f", report {row['report_age_min']} min old"
+            if "used" in row
+            else row.get("note", "")
+        )
+        print(f"  {row['account']:<12} {row['state']:<9} {detail}")
+    return status
+
+
+if __name__ == "__main__":
+    sys.exit(main())
