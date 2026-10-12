@@ -55,7 +55,7 @@ def main() -> int:
         print(f"codex-quota: cannot read the proxy at {URL}: {error}", file=sys.stderr)
         return 2
     now = time.time()
-    rows, fresh = [], 0
+    rows, fresh, n_wo_figures = [], 0, 0
     # Pool totals, in account-percent: 100 is one whole account window.
     left = rate_per_s = 0.0
     soonest_reset_s = None
@@ -71,6 +71,9 @@ def main() -> int:
         row["report_age_min"] = round(age_s / 60)
         seen = windows(quota.get("signals") or {}, age_s)
         if not seen:
+            # A rate-limit reply carries only `Retry-After`; the usage figures return with the next successful request.
+            row["note"] = "last reply had no usage figures"
+            n_wo_figures += 1
             continue
         # The window nearest to full decides how much the account can still do.
         window = max(seen, key=lambda w: w["used"])
@@ -87,7 +90,9 @@ def main() -> int:
         rate_per_s += window["used"] / elapsed_s if elapsed_s > 0 else 0
         soonest_reset_s = window["left_s"] if soonest_reset_s is None else min(soonest_reset_s, window["left_s"])
     runs_out_in_s = left / rate_per_s if rate_per_s > 0 else None
-    if soonest_reset_s is None:
+    if soonest_reset_s is None and n_wo_figures:
+        verdict, status = "UNKNOWN: the last replies had no usage figures; send one Codex request and rerun", 2
+    elif soonest_reset_s is None:
         verdict, status = "OUT: no account has quota left", 1
     elif not fresh:
         verdict, status = f"UNKNOWN: no usage report newer than {args.stale_min:g} min; send one Codex request and rerun", 2
