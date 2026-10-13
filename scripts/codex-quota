@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 """Gauge Codex quota spending through CLIProxyAPI and project whether it runs out.
 
-Reads the usage each ChatGPT account last reported to the proxy: percent of a
-quota window used, and seconds until that window resets. Assumes spending
-continues at the window's average rate so far. Never prints an account name.
+Asks the provider for each ChatGPT account's usage, which spends no quota:
+percent used of the weekly and of the 5-hour window, seconds until each resets,
+and the reset credits left. `--cached` reads what each account last reported to
+the proxy instead. Assumes spending continues at the window's average rate so
+far. Never prints an account name.
+
+The signal tells an agent what to do: `speed_up` (quota would expire unused, run
+more Codex work), `on_track`, `slow_down` (quota runs out before the reset, keep
+it for important work), `unavailable` (no usable figures; do not infer).
 
 Exit status: 0 the pool lasts until its windows reset, 1 it is projected to run
 out first (or is already out), 2 cannot tell (proxy unreachable or no fresh data).
@@ -15,10 +21,13 @@ import re
 import sys
 import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
 HOME = Path.home()
+USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
+FIVE_HOURS_S = 5 * 3600
 URL = os.environ.get("CLIPROXYAPI_URL", "http://127.0.0.1:18317")
 KEY = Path(os.environ.get("CLIPROXYAPI_MANAGEMENT_KEY", HOME / ".local/share/cliproxyapi-trial/management-key"))
 
@@ -43,8 +52,31 @@ def windows(signals: dict, age_s: float) -> list[dict]:
     return found
 
 
+def ask_provider(file: dict) -> dict | None:
+    """One account's usage from the provider, in the form of the proxy's signals; `None` when it cannot be asked."""
+    try:
+        login = json.loads(Path(file["path"]).read_text())
+        request = urllib.request.Request(
+            USAGE_URL,
+            headers={"Authorization": "Bearer " + login["access_token"], "chatgpt-account-id": login.get("account_id", ""), "User-Agent": "codex_cli_rs"},
+        )
+        with urllib.request.urlopen(request, timeout=20) as response:
+            usage = json.load(response)
+    except (OSError, ValueError, KeyError):
+        return None
+    signals = {"reset_credits": (usage.get("rate_limit_reset_credits") or {}).get("available_count")}
+    for name, key in (("Primary", "primary_window"), ("Secondary", "secondary_window")):
+        window = (usage.get("rate_limit") or {}).get(key) or {}
+        signals[f"X-Codex-{name}-Window-Minutes"] = (window.get("limit_window_seconds") or 0) / 60
+        signals[f"X-Codex-{name}-Reset-After-Seconds"] = window.get("reset_after_seconds") or 0
+        signals[f"X-Codex-{name}-Used-Percent"] = window.get("used_percent") or 0
+    return signals
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--cached", action="store_true", help="do not ask the provider; use what each account last reported to the proxy")
+    parser.add_argument("--on-track-percent", type=float, default=85, help="mean projected use at reset below which the signal is speed_up")
     parser.add_argument("--stale-min", type=float, default=60, help="a report older than this many minutes does not count as fresh")
     parser.add_argument("--json", action="store_true", help="print one JSON object instead of text")
     args = parser.parse_args()
@@ -55,16 +87,23 @@ def main() -> int:
     except OSError as error:
         print(f"codex-quota: cannot read the proxy at {URL}: {error}", file=sys.stderr)
         return 2
+    files = [file for file in files if file.get("provider") == "codex"]
+    asked = [None] * len(files)
+    if not args.cached:
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            asked = list(pool.map(lambda file: None if file.get("disabled") else ask_provider(file), files))
     now = time.time()
     rows, fresh, n_wo_figures = [], 0, 0
     # Pool totals, in account-percent: 100 is one whole account window.
     left = rate_per_s = 0.0
     soonest_reset_s = None
-    for index, file in enumerate(file for file in files if file.get("provider") == "codex"):
+    for index, (file, fresh_signals) in enumerate(zip(files, asked)):
         plan = (file.get("id_token") or {}).get("plan_type") or "?"
         row = {"account": f"{index}:{plan}", "state": "disabled" if file.get("disabled") else file.get("status")}
         rows.append(row)
         quota = file.get("quota") or {}
+        if fresh_signals:
+            quota = {"observed_at": datetime.now().astimezone().isoformat(), "signals": fresh_signals}
         if file.get("disabled") or not quota.get("observed_at"):
             row["note"] = "no usage report" if not file.get("disabled") else ""
             n_wo_figures += row["state"] == "active"
@@ -82,6 +121,10 @@ def main() -> int:
         window = max(seen, key=lambda w: w["used"])
         elapsed_s = window["length_s"] - window["left_s"]
         row.update(used=window["used"], window=hours(window["length_s"]), resets_in=hours(window["left_s"]))
+        five_hour = next((w for w in seen if w["length_s"] == FIVE_HOURS_S), None)
+        row["five_hour"] = f"5 h limit {five_hour['used']:.0f}% used, resets in {hours(five_hour['left_s'])}" if five_hour else "no 5 h limit reported"
+        if (quota.get("signals") or {}).get("reset_credits") is not None:
+            row["reset_credits"] = quota["signals"]["reset_credits"]
         if elapsed_s > 0 and window["used"] < 100:
             row["projected_at_reset"] = round(window["used"] * window["length_s"] / elapsed_s)
         if file.get("unavailable") or window["used"] >= 100:
@@ -104,16 +147,26 @@ def main() -> int:
     else:
         lasts = "no measurable use yet" if runs_out_in_s is None else f"would last {hours(runs_out_in_s)}"
         verdict, status = f"OK: {lasts}; first reset in {hours(soonest_reset_s)}", 0
-    summary = {"verdict": verdict, "exit": status, "pool_left_account_percent": round(left), "accounts": rows}
+    projected = [row["projected_at_reset"] for row in rows if row["state"] == "active" and "projected_at_reset" in row]
+    if status == 2 or (status == 0 and not projected):
+        signal = "unavailable"
+    elif status == 1:
+        signal = "slow_down"
+    else:
+        signal = "speed_up" if sum(projected) / len(projected) < args.on_track_percent else "on_track"
+    summary = {"signal": signal, "verdict": verdict, "exit": status, "pool_left_account_percent": round(left), "accounts": rows}
     if args.json:
         print(json.dumps(summary))
         return status
+    print(f"signal: {signal}")
     print(verdict)
     print(f"pool left: {left:.0f} account-percent (100 = one full account window)")
     for row in rows:
         detail = (
             f"used {row['used']:.0f}% of {row['window']} window, resets in {row['resets_in']}"
             + (f", projected {row['projected_at_reset']}% at reset" if "projected_at_reset" in row else "")
+            + f"; {row['five_hour']}"
+            + (f"; {row['reset_credits']} reset credit(s)" if "reset_credits" in row else "")
             + f", report {row['report_age_min']} min old"
             if "used" in row
             else row.get("note", "")
