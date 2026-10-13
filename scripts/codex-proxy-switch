@@ -2,8 +2,9 @@
 """Point every Codex config at CLIProxyAPI or back at CliGate. Never prints a key.
 
 `cliproxyapi` adds a marked model provider to each config and turns off its
-`chatgpt_base_url`, which points at CliGate and stalls Codex when CliGate has no
-usable account; `cligate` undoes both.
+`chatgpt_base_url` and `openai_base_url`, which point at CliGate: the first
+stalls Codex when CliGate has no usable account, the second sends a session
+that uses the built-in provider through CliGate; `cligate` undoes all three.
 `status` prints which proxy each config uses. Running Codex sessions keep the
 proxy they started with until they restart.
 """
@@ -52,7 +53,7 @@ def with_mark(text: str) -> str:
         f'experimental_bearer_token = "{KEY.read_text().strip()}"',
         MARK + " end",
     ]
-    lines = [OFF + line if line.startswith("chatgpt_base_url") else line for line in without_mark(text).splitlines()]
+    lines = [OFF + line if line.startswith(("chatgpt_base_url", "openai_base_url")) else line for line in without_mark(text).splitlines()]
     return f'model_provider = "cliproxyapi" {MARK}\n' + "\n".join(lines) + "\n" + "\n".join(block) + "\n"
 
 
