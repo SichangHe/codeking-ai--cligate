@@ -45,7 +45,7 @@ def without_mark(text: str) -> str:
 
 def with_mark(text: str) -> str:
     # Omnigent appends provider settings after the block; moving the block would leave them under the table before it, which breaks the config.
-    if MARK + " begin" in text:
+    if MARK + " begin" in text or "\n[model_providers.cliproxyapi]\n" in text:
         return "\n".join(OFF + line if line.startswith(("chatgpt_base_url", "openai_base_url")) else line for line in text.splitlines()) + "\n"
     block = [
         MARK + " begin",
@@ -80,7 +80,7 @@ def main() -> None:
             if changed != text:
                 write_private(path, changed)
             text = changed
-        counts["cliproxyapi" if MARK + " begin" in text else "cligate"] += 1
+        counts["cliproxyapi" if "\n[model_providers.cliproxyapi]\n" in text else "cligate"] += 1
     print(counts)
 
 
