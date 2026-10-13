@@ -127,9 +127,12 @@ def main() -> int:
             row["reset_credits"] = quota["signals"]["reset_credits"]
         if elapsed_s > 0 and window["used"] < 100:
             row["projected_at_reset"] = round(window["used"] * window["length_s"] / elapsed_s)
-        if file.get("unavailable") or window["used"] >= 100:
+        # The proxy also marks an account unavailable for seconds after an overload or rate-limit reply; that is not spent quota.
+        if window["used"] >= 100 or "usage_limit" in str(file.get("status_message")):
             row["state"] = "out"
             continue
+        if file.get("unavailable"):
+            row["state"] = "cooling"
         if age_s <= args.stale_min * 60:
             fresh += 1
         left += 100 - window["used"]
@@ -147,7 +150,7 @@ def main() -> int:
     else:
         lasts = "no measurable use yet" if runs_out_in_s is None else f"would last {hours(runs_out_in_s)}"
         verdict, status = f"OK: {lasts}; first reset in {hours(soonest_reset_s)}", 0
-    projected = [row["projected_at_reset"] for row in rows if row["state"] == "active" and "projected_at_reset" in row]
+    projected = [row["projected_at_reset"] for row in rows if row["state"] in ("active", "cooling") and "projected_at_reset" in row]
     if status == 2 or (status == 0 and not projected):
         signal = "unavailable"
     elif status == 1:
