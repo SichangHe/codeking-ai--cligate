@@ -28,6 +28,7 @@ from pathlib import Path
 HOME = Path.home()
 USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 FIVE_HOURS_S = 5 * 3600
+MIN_ELAPSED = 0.03
 URL = os.environ.get("CLIPROXYAPI_URL", "http://127.0.0.1:18317")
 KEY = Path(os.environ.get("CLIPROXYAPI_MANAGEMENT_KEY", HOME / ".local/share/cliproxyapi-trial/management-key"))
 
@@ -120,6 +121,9 @@ def main() -> int:
         # The window nearest to full decides how much the account can still do.
         window = max(seen, key=lambda w: w["used"])
         elapsed_s = window["length_s"] - window["left_s"]
+        # Early in a window a single percent of use projects to several hundred; no rate is inferred before `MIN_ELAPSED` of it has passed.
+        if elapsed_s < MIN_ELAPSED * window["length_s"]:
+            elapsed_s = 0
         row.update(used=window["used"], window=hours(window["length_s"]), resets_in=hours(window["left_s"]))
         five_hour = next((w for w in seen if w["length_s"] == FIVE_HOURS_S), None)
         row["five_hour"] = f"5 h limit {five_hour['used']:.0f}% used, resets in {hours(five_hour['left_s'])}" if five_hour else "no 5 h limit reported"
@@ -151,10 +155,13 @@ def main() -> int:
         lasts = "no measurable use yet" if runs_out_in_s is None else f"would last {hours(runs_out_in_s)}"
         verdict, status = f"OK: {lasts}; first reset in {hours(soonest_reset_s)}", 0
     projected = [row["projected_at_reset"] for row in rows if row["state"] in ("active", "cooling") and "projected_at_reset" in row]
-    if status == 2 or (status == 0 and not projected):
+    if status == 2:
         signal = "unavailable"
     elif status == 1:
         signal = "slow_down"
+    elif not projected:
+        # A window that just began: nothing measurable is used yet.
+        signal = "speed_up"
     else:
         signal = "speed_up" if sum(projected) / len(projected) < args.on_track_percent else "on_track"
     summary = {"signal": signal, "verdict": verdict, "exit": status, "pool_left_account_percent": round(left), "accounts": rows}
