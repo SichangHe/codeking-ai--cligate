@@ -4,7 +4,9 @@
 A TCP relay: it reads each connection's request head, makes a
 `POST /v1/responses` wait for its turn, then pipes bytes both ways. Every other
 request passes at once. It adds `Connection: close` so each connection carries
-one request and none slips past the wait.
+one request and none slips past the wait. The rate is read again from
+`--rate-file` (one number, requests per minute) whenever that file changes, so
+changing it needs no restart, which would cut every answer in progress.
 
 Why: on 2026-10-12 the provider refused requests (`429 Rate limit exceeded`)
 whenever the proxy carried about 60 or more per minute, and agents failed.
@@ -14,6 +16,7 @@ import argparse
 import asyncio
 import sys
 import time
+from pathlib import Path
 
 HEAD_LIMIT = 1 << 20
 
@@ -21,16 +24,23 @@ HEAD_LIMIT = 1 << 20
 class Pace:
     """Grant turns `interval_s` apart, after an initial `burst` of free turns."""
 
-    def __init__(self, per_min: float, burst: int) -> None:
-        self.interval_s = 60 / per_min
-        self.burst_s = burst * self.interval_s
+    def __init__(self, per_min: float, burst: int, rate_file: Path | None) -> None:
+        self.per_min, self.burst, self.rate_file = per_min, burst, rate_file
         self.next_s = time.monotonic()
+
+    def interval_s(self) -> float:
+        """Seconds between turns, from the rate file when it holds a positive number."""
+        try:
+            per_min = float(self.rate_file.read_text()) if self.rate_file else self.per_min
+        except (OSError, ValueError):
+            per_min = self.per_min
+        return 60 / (per_min if per_min > 0 else self.per_min)
 
     async def turn(self) -> float:
         """Wait for the next turn; returns the seconds waited. Single-threaded, so no lock is needed."""
-        now_s = time.monotonic()
-        at_s = max(self.next_s, now_s - self.burst_s)
-        self.next_s = at_s + self.interval_s
+        now_s, interval_s = time.monotonic(), self.interval_s()
+        at_s = max(self.next_s, now_s - self.burst * interval_s)
+        self.next_s = at_s + interval_s
         wait_s = max(0.0, at_s - now_s)
         await asyncio.sleep(wait_s)
         return wait_s
@@ -72,7 +82,7 @@ async def serve(client_in: asyncio.StreamReader, client_out: asyncio.StreamWrite
 
 
 async def run(args: argparse.Namespace) -> None:
-    pace = Pace(args.per_min, args.burst)
+    pace = Pace(args.per_min, args.burst, args.rate_file)
     server = await asyncio.start_server(
         lambda reader, writer: serve(reader, writer, pace, (args.upstream_host, args.upstream_port)),
         args.host,
@@ -91,6 +101,7 @@ def main() -> int:
     parser.add_argument("--upstream-host", default="127.0.0.1")
     parser.add_argument("--upstream-port", type=int, default=18318, help="where CLIProxyAPI listens")
     parser.add_argument("--per-min", type=float, default=30, help="Codex requests let through per minute")
+    parser.add_argument("--rate-file", type=Path, help="file holding the requests per minute; overrides --per-min while it holds a positive number")
     parser.add_argument("--burst", type=int, default=5, help="requests let through at once after an idle time")
     asyncio.run(run(parser.parse_args()))
     return 0
