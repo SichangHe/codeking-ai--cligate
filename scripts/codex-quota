@@ -67,6 +67,7 @@ def main() -> int:
         quota = file.get("quota") or {}
         if file.get("disabled") or not quota.get("observed_at"):
             row["note"] = "no usage report" if not file.get("disabled") else ""
+            n_wo_figures += row["state"] == "active"
             continue
         # Python before 3.11 rejects the proxy's nanosecond fractions.
         age_s = now - datetime.fromisoformat(re.sub(r"(\.\d{6})\d+", r"\1", quota["observed_at"])).timestamp()

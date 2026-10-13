@@ -1,0 +1,100 @@
+#!/usr/bin/env python3
+"""Hold Codex requests back to a fixed rate in front of CLIProxyAPI.
+
+A TCP relay: it reads each connection's request head, makes a
+`POST /v1/responses` wait for its turn, then pipes bytes both ways. Every other
+request passes at once. It adds `Connection: close` so each connection carries
+one request and none slips past the wait.
+
+Why: on 2026-10-12 the provider refused requests (`429 Rate limit exceeded`)
+whenever the proxy carried about 60 or more per minute, and agents failed.
+Waiting here slows agents down instead.
+"""
+import argparse
+import asyncio
+import sys
+import time
+
+HEAD_LIMIT = 1 << 20
+
+
+class Pace:
+    """Grant turns `interval_s` apart, after an initial `burst` of free turns."""
+
+    def __init__(self, per_min: float, burst: int) -> None:
+        self.interval_s = 60 / per_min
+        self.burst_s = burst * self.interval_s
+        self.next_s = time.monotonic()
+
+    async def turn(self) -> float:
+        """Wait for the next turn; returns the seconds waited. Single-threaded, so no lock is needed."""
+        now_s = time.monotonic()
+        at_s = max(self.next_s, now_s - self.burst_s)
+        self.next_s = at_s + self.interval_s
+        wait_s = max(0.0, at_s - now_s)
+        await asyncio.sleep(wait_s)
+        return wait_s
+
+
+async def pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    try:
+        while data := await reader.read(65536):
+            writer.write(data)
+            await writer.drain()
+    except (ConnectionError, asyncio.CancelledError):
+        pass
+    finally:
+        writer.close()
+
+
+async def serve(client_in: asyncio.StreamReader, client_out: asyncio.StreamWriter, pace: Pace, upstream: tuple[str, int]) -> None:
+    try:
+        head = await client_in.readuntil(b"\r\n\r\n")
+    except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, ConnectionError):
+        client_out.close()
+        return
+    request_line, _, headers = head.partition(b"\r\n")
+    if request_line.startswith(b"POST /v1/responses"):
+        waited_s = await pace.turn()
+        if waited_s >= 1:
+            print(f"held a request {waited_s:.1f} s", flush=True)
+    kept = [line for line in headers.split(b"\r\n") if line and not line.lower().startswith(b"connection:")]
+    head = b"\r\n".join([request_line, *kept, b"Connection: close", b"", b""])
+    try:
+        upstream_in, upstream_out = await asyncio.open_connection(*upstream)
+    except OSError as error:
+        print(f"cannot reach the proxy at {upstream}: {error}", file=sys.stderr, flush=True)
+        client_out.write(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+        client_out.close()
+        return
+    upstream_out.write(head)
+    await asyncio.gather(pipe(client_in, upstream_out), pipe(upstream_in, client_out))
+
+
+async def run(args: argparse.Namespace) -> None:
+    pace = Pace(args.per_min, args.burst)
+    server = await asyncio.start_server(
+        lambda reader, writer: serve(reader, writer, pace, (args.upstream_host, args.upstream_port)),
+        args.host,
+        args.port,
+        limit=HEAD_LIMIT,
+    )
+    print(f"throttling to {args.per_min:g} requests per minute on {args.host}:{args.port} -> {args.upstream_host}:{args.upstream_port}", flush=True)
+    async with server:
+        await server.serve_forever()
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=18317, help="where Codex clients connect")
+    parser.add_argument("--upstream-host", default="127.0.0.1")
+    parser.add_argument("--upstream-port", type=int, default=18318, help="where CLIProxyAPI listens")
+    parser.add_argument("--per-min", type=float, default=30, help="Codex requests let through per minute")
+    parser.add_argument("--burst", type=int, default=5, help="requests let through at once after an idle time")
+    asyncio.run(run(parser.parse_args()))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
