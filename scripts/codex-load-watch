@@ -58,6 +58,8 @@ def main() -> int:
     peak_minute, peak = max(per_minute.items(), key=lambda item: item[1], default=("", 0))
     quota = subprocess.run([Path(__file__).with_name("codex-quota"), "--json"], capture_output=True, text=True, timeout=60)
     summary = json.loads(quota.stdout) if quota.stdout.strip() else {"exit": 2, "verdict": quota.stderr.strip(), "accounts": []}
+    if summary["exit"] == 2:
+        print(f"codex-load-watch: no quota reading: {summary['verdict']}", file=sys.stderr)
     projected = [row["projected_at_reset"] for row in summary["accounts"] if "projected_at_reset" in row]
     mean_projected = sum(projected) / len(projected) if projected else None
     warnings = {}

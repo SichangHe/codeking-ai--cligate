@@ -11,6 +11,7 @@ out first (or is already out), 2 cannot tell (proxy unreachable or no fresh data
 import argparse
 import json
 import os
+import re
 import sys
 import time
 import urllib.request
@@ -67,7 +68,8 @@ def main() -> int:
         if file.get("disabled") or not quota.get("observed_at"):
             row["note"] = "no usage report" if not file.get("disabled") else ""
             continue
-        age_s = now - datetime.fromisoformat(quota["observed_at"]).timestamp()
+        # Python before 3.11 rejects the proxy's nanosecond fractions.
+        age_s = now - datetime.fromisoformat(re.sub(r"(\.\d{6})\d+", r"\1", quota["observed_at"])).timestamp()
         row["report_age_min"] = round(age_s / 60)
         seen = windows(quota.get("signals") or {}, age_s)
         if not seen:
