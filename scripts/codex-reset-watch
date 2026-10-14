@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+"""When the working Codex accounts run out, reset each once and switch the spare account on.
+
+🧑 "When those two accounts that I still enable run out enable the other account and reset the two
+accounts that run out once. Use the reset that expires in eight days."
+
+Run from a timer. For each account in `--reset` that the provider reports at its limit, redeem that
+account's soonest-expiring reset credit, once per account ever (recorded in the state file). When
+every account in `--reset` has been reset, switch `--enable` on in CLIProxyAPI. Each action is told
+to the manager with `amh tell manager`. `--print` only shows what it would do.
+"""
+import argparse
+import json
+import os
+import subprocess
+import sys
+import urllib.request
+import uuid
+from pathlib import Path
+
+HOME = Path.home()
+AUTHS = HOME / ".local/share/cliproxyapi-trial/auths"
+URL = os.environ.get("CLIPROXYAPI_URL", "http://127.0.0.1:18318")
+KEY = HOME / ".local/share/cliproxyapi-trial/management-key"
+STATE = Path(os.environ.get("XDG_STATE_HOME", HOME / ".local/state")) / "codex-reset-watch.json"
+API = "https://chatgpt.com/backend-api/wham/"
+
+
+def provider(name: str, path: str, body: dict | None = None) -> dict:
+    login = json.loads((AUTHS / name).read_text())
+    headers = {"Authorization": "Bearer " + login["access_token"], "chatgpt-account-id": login.get("account_id", ""), "User-Agent": "codex_cli_rs"}
+    data = None
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+        data = json.dumps(body).encode()
+    request = urllib.request.Request(API + path, data=data, headers=headers, method="POST" if body is not None else "GET")
+    with urllib.request.urlopen(request, timeout=30) as response:
+        return json.load(response)
+
+
+def tell(task_file: str, text: str) -> None:
+    subprocess.run(["amh", "tell", "manager", "--task-file", task_file, text], capture_output=True, text=True, timeout=120)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--reset", action="append", required=True, help="auth file name of an account to reset once when it runs out")
+    parser.add_argument("--enable", required=True, help="auth file name of the account to switch on after all are reset")
+    parser.add_argument("--task-file", default="amh_support_codex.md")
+    parser.add_argument("--print", action="store_true")
+    args = parser.parse_args()
+    try:
+        state = json.loads(STATE.read_text())
+    except (OSError, ValueError):
+        state = {"reset": {}, "enabled": False}
+    for name in args.reset:
+        if name in state["reset"]:
+            continue
+        limit = provider(name, "usage")["rate_limit"]
+        if not limit.get("limit_reached") and (limit.get("primary_window") or {}).get("used_percent", 0) < 100:
+            continue
+        credits = [c for c in provider(name, "rate-limit-reset-credits")["credits"] if c["status"] == "available" and c["is_supported_by_plan"]]
+        if not credits:
+            tell(args.task_file, f"Codex reset watch: {name[6:-5]} ran out but has no reset credit left; nothing done.")
+            state["reset"][name] = "no credit"
+            continue
+        credit = min(credits, key=lambda c: c["expires_at"])
+        if args.print:
+            print(f"would redeem {credit['id']} (expires {credit['expires_at']}) on {name}")
+            continue
+        try:
+            answer = provider(name, "rate-limit-reset-credits/consume", {"credit_id": credit["id"], "redeem_request_id": str(uuid.uuid4())})
+        except OSError as error:
+            detail = getattr(error, "read", lambda: b"")()[:300].decode(errors="replace")
+            tell(args.task_file, f"Codex reset watch: redeeming the reset credit of {name[6:-5]} failed: {error} {detail}. It retries in 5 min.")
+            return 1
+        left = len(credits) - 1
+        state["reset"][name] = credit["id"]
+        STATE.write_text(json.dumps(state))
+        tell(args.task_file, f"Codex reset watch: {name[6:-5]} ran out and was reset with its credit expiring {credit['expires_at'][:10]}; {left} credit(s) left on it. Provider answer: {json.dumps(answer)[:200]}")
+    if not state["enabled"] and all(name in state["reset"] for name in args.reset):
+        if args.print:
+            print(f"would switch on {args.enable}")
+            return 0
+        request = urllib.request.Request(
+            URL + "/v0/management/auth-files/status",
+            data=json.dumps({"name": args.enable, "disabled": False}).encode(),
+            headers={"Authorization": "Bearer " + KEY.read_text().strip(), "Content-Type": "application/json"},
+            method="PATCH",
+        )
+        urllib.request.urlopen(request, timeout=20).read()
+        state["enabled"] = True
+        STATE.write_text(json.dumps(state))
+        tell(args.task_file, f"Codex reset watch: all reset accounts are reset, so {args.enable[6:-5]} is switched on in the proxy.")
+    if args.print:
+        print("state:", state)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
