@@ -1,0 +1,83 @@
+#!/usr/bin/env python3
+"""Adjust the Codex throttle rate from recent provider and client outcomes.
+
+Run periodically (for example every five minutes). A refusal or failed client
+reply cuts the rate; a clean window raises it slowly. The rate file is consumed
+by ``codex-throttle`` without restarting that service.
+"""
+import argparse
+import json
+import os
+import re
+import subprocess
+import time
+from datetime import datetime, timedelta
+from pathlib import Path
+
+HOME = Path.home()
+LOG = Path(os.environ.get("CLIPROXYAPI_MAIN_LOG", HOME / ".local/share/cliproxyapi-trial/auths/logs/main.log"))
+RATE = Path(os.environ.get("CODEX_THROTTLE_RATE", HOME / ".local/state/codex-throttle-rate"))
+STATE = Path(os.environ.get("XDG_STATE_HOME", HOME / ".local/state")) / "codex-rate-adapt.json"
+LINE = re.compile(r"^\[(\d{4}-\d\d-\d\d \d\d:\d\d):\d\d\].*(?:conductor_execution\.go.*\] 429 \|.*Rate limit exceeded|gin_logger\.go.*\] (\d{3}) \|.*POST +\"/v1/responses\")")
+
+
+def readings(minutes: int) -> tuple[int, int, int, float]:
+    """Return refusals, failures, requests, and mean throttle wait seconds."""
+    with LOG.open("rb") as file:
+        file.seek(max(0, LOG.stat().st_size - 2_000_000))
+        lines = file.read().decode(errors="replace").splitlines()
+    now = datetime.now().replace(second=0, microsecond=0)
+    wanted = {(now - timedelta(minutes=i)).strftime("%Y-%m-%d %H:%M") for i in range(1, minutes + 1)}
+    refused = failed = requests = 0
+    for line in lines:
+        found = LINE.search(line)
+        if not found or found[1] not in wanted:
+            continue
+        if "conductor_execution.go" in line:
+            refused += 1
+        else:
+            requests += 1
+            if found[2] in {"429", "502", "503"}:
+                failed += 1
+    journal = subprocess.run(["journalctl", "--user", "-u", "codex-throttle.service", "--since", f"-{minutes}min", "--no-pager", "-o", "cat"], capture_output=True, text=True, timeout=30)
+    waits = [float(value) for value in re.findall(r"held a request ([\d.]+) s", journal.stdout)]
+    return refused, failed, requests, sum(waits) / len(waits) if waits else 0.0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--minutes", type=int, default=10)
+    parser.add_argument("--min-rate", type=float, default=5)
+    parser.add_argument("--max-rate", type=float, default=60)
+    parser.add_argument("--increase", type=float, default=1.05)
+    parser.add_argument("--decrease", type=float, default=.80)
+    parser.add_argument("--print", action="store_true")
+    args = parser.parse_args()
+    try:
+        rate = float(RATE.read_text())
+    except (OSError, ValueError):
+        rate = 25.0
+    refused, failed, requests, mean_wait_s = readings(args.minutes)
+    old = rate
+    high_refusal_share = requests and refused > requests / 3
+    if failed or high_refusal_share:
+        rate *= args.decrease
+    elif mean_wait_s >= 1 or requests >= rate * args.minutes / 60 * .8:
+        rate *= args.increase
+    rate = max(args.min_rate, min(args.max_rate, rate))
+    message = f"rate {old:.1f} -> {rate:.1f}/min; refusals {refused}, failures {failed}, requests {requests}, mean wait {mean_wait_s:.1f}s in {args.minutes} min"
+    if args.print:
+        print(message)
+        return 0
+    RATE.parent.mkdir(parents=True, exist_ok=True)
+    temporary = RATE.with_name(f".{RATE.name}.{os.getpid()}.tmp")
+    temporary.write_text(f"{rate:.3f}\n")
+    temporary.replace(RATE)
+    STATE.parent.mkdir(parents=True, exist_ok=True)
+    STATE.write_text(json.dumps({"at": time.time(), "message": message}) + "\n")
+    print(message)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
