@@ -9,7 +9,9 @@ far. Never prints an account name.
 
 The signal tells an agent what to do: `speed_up` (quota would expire unused, run
 more Codex work), `on_track`, `slow_down` (quota runs out before the reset, keep
-it for important work), `unavailable` (no usable figures; do not infer).
+it for important work), `unavailable` (no usable figures; do not infer). While the file `codex-quota-goal` in the
+state folder starts with `use_up`, the signal is `speed_up` as long as any
+account has quota left, and a projected run-out exits 0.
 
 Exit status: 0 the pool lasts until its windows reset, 1 it is projected to run
 out first (or is already out), 2 cannot tell (proxy unreachable or no fresh data).
@@ -28,6 +30,8 @@ from pathlib import Path
 HOME = Path.home()
 USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 FIVE_HOURS_S = 5 * 3600
+# While this file's first word is `use_up`, running out before the reset is the goal, not a reason to slow down; the rest of the file says why.
+GOAL = Path(os.environ.get("XDG_STATE_HOME", HOME / ".local/state")) / "codex-quota-goal"
 MIN_ELAPSED = 0.03
 URL = os.environ.get("CLIPROXYAPI_URL", "http://127.0.0.1:18317")
 KEY = Path(os.environ.get("CLIPROXYAPI_MANAGEMENT_KEY", HOME / ".local/share/cliproxyapi-trial/management-key"))
@@ -95,6 +99,8 @@ def main() -> int:
             asked = list(pool.map(lambda file: None if file.get("disabled") else ask_provider(file), files))
     now = time.time()
     rows, fresh, n_wo_figures = [], 0, 0
+    goal = GOAL.read_text().split(maxsplit=1) if GOAL.exists() else []
+    use_up = False
     # Pool totals, in account-percent: 100 is one whole account window.
     left = rate_per_s = 0.0
     soonest_reset_s = None
@@ -151,6 +157,8 @@ def main() -> int:
         verdict, status = f"UNKNOWN: no usage report newer than {args.stale_min:g} min; send one Codex request and rerun", 2
     elif runs_out_in_s is not None and runs_out_in_s < soonest_reset_s:
         verdict, status = f"PROJECTED TO RUN OUT in {hours(runs_out_in_s)}, {hours(soonest_reset_s - runs_out_in_s)} before the first reset", 1
+        if goal[:1] == ["use_up"]:
+            use_up, status = True, 0
     else:
         lasts = "no measurable use yet" if runs_out_in_s is None else f"would last {hours(runs_out_in_s)}"
         verdict, status = f"OK: {lasts}; first reset in {hours(soonest_reset_s)}", 0
@@ -159,11 +167,13 @@ def main() -> int:
         signal = "unavailable"
     elif status == 1:
         signal = "slow_down"
-    elif not projected:
-        # A window that just began: nothing measurable is used yet.
+    elif not projected or use_up or goal[:1] == ["use_up"]:
+        # A window that just began has nothing measurable used; under the `use_up` goal quota left is quota to spend.
         signal = "speed_up"
     else:
         signal = "speed_up" if sum(projected) / len(projected) < args.on_track_percent else "on_track"
+    if goal[:1] == ["use_up"]:
+        verdict += f"\ngoal: use the quota up before the reset. {' '.join(goal[1:]).strip()}"
     summary = {"signal": signal, "verdict": verdict, "exit": status, "pool_left_account_percent": round(left), "accounts": rows}
     if args.json:
         print(json.dumps(summary))
