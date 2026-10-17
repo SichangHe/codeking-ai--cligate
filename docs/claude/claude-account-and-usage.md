@@ -45,7 +45,3 @@ anywhere else.
 - The `claude-usage.timer` (every 10 minutes) appends readings to
   `~/.local/state/claude-usage.jsonl` and adds new transcript tokens to
   `~/.local/state/claude-usage-tokens.json`, also counted per org.
-- When a window of the active org reaches 100% or is locked, the timer saves
-  an evidence bundle once in `~/claude_quota_evidence/ORG-WINDOW-RESET/`
-  (`summary.md`, `usage_timeline.csv`, `tokens_by_day_model.csv`,
-  `work_done.md`, `quota_at_exhaustion.json`) and emails the human its path.

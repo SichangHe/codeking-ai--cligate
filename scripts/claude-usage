@@ -245,12 +245,6 @@ def main():
             entry["error"] = f"{type(error).__name__} {getattr(error, 'code', '')}".strip()
         state = add_tokens(entry["org"])
         if "windows" in entry:
-            folder = collect_evidence(entry["org"], entry["windows"], state)
-            if folder:
-                subprocess.run([str(HOME / ".config/bin/amh"), "tell", "human", "--task-file", "amh_support_codex.md",
-                                "--subject", f"Claude quota of {entry['org']} ran out: evidence saved",
-                                f"Evidence bundle for management: {folder} (summary.md first)."],
-                               cwd="/ssd1/sichangheagent/agent_managers", timeout=120)
             apply_policy(entry)
             entry["windows"].pop("raw")
         with LOG.open("a") as handle:
