@@ -4,7 +4,17 @@ Every Claude agent on this machine shares one Claude Code login. Two logins
 are saved: `midas` (the Midas team org, Max 5x seat) and `personal` (the
 human's own org, Max 20x).
 
-## switch back to personal (for a Codex agent)
+## through the proxy (since 2026-10-17)
+
+`~/.claude/settings.json` sends every Claude Code session to CLIProxyAPI
+(`ANTHROPIC_BASE_URL=http://127.0.0.1:18318`). The proxy holds both logins in
+`~/.local/share/cliproxyapi-trial/auths/claude-*.json`: Midas has `priority`
+10, personal 0, and session affinity keeps a session on one login until it
+runs out. While this is on, the `claude-usage` timer only records and does not
+pause agents or switch logins. To undo, remove the two `ANTHROPIC_*` entries
+from `env` in `~/.claude/settings.json`.
+
+## switch back to personal (for a Codex agent, without the proxy)
 
 Do this when the human asks, or after Midas quota ran out and the human
 agreed to go back:

@@ -192,6 +192,9 @@ def tell_both(subject, text):
 
 def apply_policy(entry):
     """Midas while it has quota; when it runs out, hold the VL experiments and use the personal login until the reset."""
+    # Through the proxy, Claude agents fall back to the personal login by themselves.
+    if json.loads((HOME / ".claude/settings.json").read_text()).get("env", {}).get("ANTHROPIC_BASE_URL"):
+        return
     policy = json.loads(POLICY.read_text()) if POLICY.exists() else {}
     windows = entry.get("windows") or {}
     full = [w for name, w in windows.items() if name != "raw" and ((w["percent"] or 0) >= 100 or w["locked"])]
