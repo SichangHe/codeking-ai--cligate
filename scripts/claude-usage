@@ -7,12 +7,20 @@ organization's quota use, which spends no quota, and appends it to
 transcripts written since the last run to per-day, per-model totals in
 `claude-usage-tokens.json`.
 
+When a window of the active organization reaches 100% or is locked, `--record`
+saves an evidence bundle for management once per window, in
+`~/claude_quota_evidence/ORG-DATE/`, and tells the human where it is.
+
+Switching logins: `claude-account`; see docs/claude/claude-account-and-usage.md.
+
 Without options it prints the organization, percent used of the 5-hour and
 7-day windows with their resets, and the token totals of the last 7 days.
 Never prints a token or an email address.
 """
 import argparse
+import re
 import json
+import subprocess
 import sys
 import time
 import urllib.request
@@ -22,6 +30,8 @@ from pathlib import Path
 HOME = Path.home()
 STATE = HOME / ".local/state"
 LOG = STATE / "claude-usage.jsonl"
+EVIDENCE = HOME / "claude_quota_evidence"
+WORK_LOGS = Path("/ssd1/sichangheagent/work_logs")
 TOKENS = STATE / "claude-usage-tokens.json"
 PROJECTS = HOME / ".claude/projects"
 FIELDS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
@@ -39,16 +49,18 @@ def quota():
         headers={"Authorization": "Bearer " + token, "anthropic-beta": "oauth-2025-04-20", "User-Agent": "claude-usage"},
     )
     data = json.load(urllib.request.urlopen(request, timeout=30))
-    windows = {}
+    windows = {"raw": data}
     for name in ("five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet"):
         if data.get(name):
-            windows[name] = {"percent": data[name].get("utilization"), "resets_at": data[name].get("resets_at")}
+            windows[name] = {"percent": data[name].get("utilization"), "resets_at": data[name].get("resets_at"),
+                             "locked": data[name].get("locked_reason")}
     return windows
 
 
-def add_tokens():
+def add_tokens(org):
     """Add usage from transcript lines written since the last run; each response counts once."""
     state = json.loads(TOKENS.read_text()) if TOKENS.exists() else {"offsets": {}, "days": {}, "seen": []}
+    state.setdefault("orgs", {})
     seen = set(state["seen"])
     for path in PROJECTS.glob("**/*.jsonl"):
         key = str(path)
@@ -78,13 +90,64 @@ def add_tokens():
             except (KeyError, ValueError, AttributeError):
                 day = datetime.now().strftime("%Y-%m-%d")
             bucket = state["days"].setdefault(day, {}).setdefault(message.get("model") or "unknown", dict.fromkeys(FIELDS, 0))
+            # Per organization: counted from the run after the login switched to it.
+            by_org = state["orgs"].setdefault(org, {}).setdefault(day, {}).setdefault(message.get("model") or "unknown", dict.fromkeys(FIELDS, 0))
             for field in FIELDS:
                 bucket[field] += usage.get(field) or 0
+                by_org[field] += usage.get(field) or 0
     state["seen"] = list(seen)[-200000:]
     cutoff = time.strftime("%Y-%m-%d", time.localtime(time.time() - 90 * 86400))
     state["days"] = {day: models for day, models in state["days"].items() if day >= cutoff}
     TOKENS.write_text(json.dumps(state))
-    return state["days"]
+    return state
+
+
+def collect_evidence(org, windows, state):
+    """Save, once per exhausted window, what shows management how the quota went to real work."""
+    full = [name for name, window in windows.items() if name != "raw" and ((window["percent"] or 0) >= 100 or window["locked"])]
+    if not full:
+        return None
+    reset = windows[full[0]]["resets_at"] or "none"
+    folder = EVIDENCE / f"{re.sub(r'[^A-Za-z0-9]+', '_', org).strip('_')}-{full[0]}-{reset[:13]}"
+    if folder.exists():
+        return None
+    folder.mkdir(parents=True)
+    snapshots = [json.loads(line) for line in LOG.read_text().splitlines() if line.strip()]
+    snapshots = [entry for entry in snapshots if entry.get("org") == org and "windows" in entry]
+    start = snapshots[0]["at"] if snapshots else "unknown"
+    with (folder / "usage_timeline.csv").open("w") as handle:
+        handle.write("time,five_hour_percent,seven_day_percent\n")
+        for entry in snapshots:
+            w = entry["windows"]
+            handle.write(f"{entry['at']},{w.get('five_hour', {}).get('percent')},{w.get('seven_day', {}).get('percent')}\n")
+    (folder / "quota_at_exhaustion.json").write_text(json.dumps(windows["raw"], indent=1))
+    totals = dict.fromkeys(FIELDS, 0)
+    with (folder / "tokens_by_day_model.csv").open("w") as handle:
+        handle.write("day,model," + ",".join(FIELDS) + "\n")
+        for day, models in sorted(state["orgs"].get(org, {}).items()):
+            for model, bucket in sorted(models.items()):
+                handle.write(f"{day},{model}," + ",".join(str(bucket[f]) for f in FIELDS) + "\n")
+                for field in FIELDS:
+                    totals[field] += bucket[field]
+    since = datetime.fromisoformat(start).timestamp() if snapshots else 0
+    tasks = []
+    for path in sorted(WORK_LOGS.glob("*.md")):
+        if path.stat().st_mtime < since:
+            continue
+        head = path.read_text(errors="replace")[:4000]
+        status = next((line.split(":", 1)[1].strip() for line in head.splitlines() if line.startswith("status:")), "")
+        tasks.append(f"| {path.stem} | {status} |")
+    sessions = sum(1 for path in PROJECTS.glob("**/*.jsonl") if path.stat().st_mtime >= since)
+    (folder / "work_done.md").write_text("Task files worked on since the first reading on this organization.\n\n| task | status |\n|---|---|\n" + "\n".join(tasks) + "\n")
+    (folder / "summary.md").write_text(f"""# Claude quota exhausted: {org}
+
+- Limit reached: {', '.join(full)} at {datetime.now().astimezone().isoformat(timespec='minutes')}; resets {reset}.
+- First reading on this organization: {start}.
+- Tokens used on it: {sum(totals.values()):,} in all; output {totals['output_tokens']:,}, input {totals['input_tokens']:,}, cache write {totals['cache_creation_input_tokens']:,}, cache read {totals['cache_read_input_tokens']:,}.
+- Claude Code sessions active in that time: {sessions}; task files worked on: {len(tasks)} (see work_done.md).
+- usage_timeline.csv: percent used at each 10-minute reading. quota_at_exhaustion.json: Anthropic's own usage reply when the limit was hit. tokens_by_day_model.csv: tokens per day and model.
+""")
+    return folder
 
 
 def main():
@@ -98,13 +161,23 @@ def main():
             entry["windows"] = quota()
         except Exception as error:
             entry["error"] = f"{type(error).__name__} {getattr(error, 'code', '')}".strip()
+        state = add_tokens(entry["org"])
+        if "windows" in entry:
+            folder = collect_evidence(entry["org"], entry["windows"], state)
+            if folder:
+                subprocess.run([str(HOME / ".config/bin/amh"), "tell", "human", "--task-file", "amh_support_codex.md",
+                                "--subject", f"Claude quota of {entry['org']} ran out: evidence saved",
+                                f"Evidence bundle for management: {folder} (summary.md first)."],
+                               cwd="/ssd1/sichangheagent/agent_managers", timeout=120)
+            entry["windows"].pop("raw")
         with LOG.open("a") as handle:
             handle.write(json.dumps(entry) + "\n")
-        add_tokens()
         return 0 if "windows" in entry else 2
     print("organization:", org_name())
     try:
         for name, window in quota().items():
+            if name == "raw":
+                continue
             print(f"{name}: {window['percent']}% used, resets {window['resets_at']}")
     except Exception as error:
         print("quota: unavailable,", type(error).__name__)

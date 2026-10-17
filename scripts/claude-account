@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+"""Switch the machine's Claude Code login between saved accounts.
+
+Every Claude agent on this machine reads one login: `~/.claude/.credentials.json`
+plus `oauthAccount` in `~/.claude.json`. Saved logins live in
+`~/.local/state/claude-accounts/NAME/` (`personal`, `midas`).
+
+  claude-account            show the active organization and the saved names
+  claude-account use NAME   save the active login under its own name, then make NAME active
+  claude-account save NAME  save the active login as NAME
+
+Agents started after a switch use the new login; running agents keep theirs
+until they restart. Never prints a token.
+"""
+import json
+import os
+import shutil
+import sys
+from pathlib import Path
+
+HOME = Path.home()
+CREDENTIALS = HOME / ".claude/.credentials.json"
+CONFIG = HOME / ".claude.json"
+SAVED = HOME / ".local/state/claude-accounts"
+NAMES = {"Midas": "midas", "stevensichanghe@gmail.com's Organization": "personal"}
+
+
+def active_org():
+    return (json.loads(CONFIG.read_text()).get("oauthAccount") or {}).get("organizationName", "unknown")
+
+
+def replace(path, text):
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+
+
+def save(name):
+    folder = SAVED / name
+    folder.mkdir(parents=True, exist_ok=True)
+    os.chmod(SAVED, 0o700)
+    os.chmod(folder, 0o700)
+    shutil.copy2(CREDENTIALS, folder / "credentials.json")
+    replace(folder / "oauthAccount.json", json.dumps(json.loads(CONFIG.read_text())["oauthAccount"]))
+
+
+def use(name):
+    folder = SAVED / name
+    if not (folder / "credentials.json").exists():
+        sys.exit(f"no saved login named {name}; saved: {', '.join(sorted(p.name for p in SAVED.iterdir()))}")
+    current = NAMES.get(active_org())
+    if current and current != name:
+        save(current)
+    config = json.loads(CONFIG.read_text())
+    config["oauthAccount"] = json.loads((folder / "oauthAccount.json").read_text())
+    replace(CONFIG, json.dumps(config, indent=2))
+    replace(CREDENTIALS, (folder / "credentials.json").read_text())
+
+
+def main():
+    args = sys.argv[1:]
+    if len(args) == 2 and args[0] in ("use", "save"):
+        (use if args[0] == "use" else save)(args[1])
+    elif args:
+        sys.exit(__doc__)
+    saved = sorted(p.name for p in SAVED.iterdir()) if SAVED.exists() else []
+    print("active organization:", active_org())
+    print("saved logins:", ", ".join(saved) or "none")
+
+
+if __name__ == "__main__":
+    main()
