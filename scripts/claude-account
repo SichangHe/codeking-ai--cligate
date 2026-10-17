@@ -61,7 +61,9 @@ def use(name):
     folder = SAVED / name
     if not (folder / "credentials.json").exists():
         sys.exit(f"no saved login named {name}; saved: {', '.join(sorted(p.name for p in SAVED.iterdir()))}")
-    current = NAMES.get(active_org())
+    # If Anthropic does not answer, tell the logins apart by plan: Midas is a team seat.
+    plan = json.loads(CREDENTIALS.read_text())["claudeAiOauth"].get("subscriptionType")
+    current = NAMES.get(active_org()) or {"team": "midas", "max": "personal"}.get(plan)
     if current and current != name:
         save(current)
     config = json.loads(CONFIG.read_text())
