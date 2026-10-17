@@ -221,8 +221,10 @@ def apply_policy(entry):
         POLICY.unlink()
         # Releasing wakes each agent, at most 2 starts a minute, so it runs on after this reading.
         script = "; ".join(f"{AMH} agent release {task} --task-file amh_support_codex.md" for task in held) or "true"
-        subprocess.Popen(["bash", "-c", script], cwd="/ssd1/sichangheagent/agent_managers", start_new_session=True,
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # A transient unit, since systemd kills what is left in this service when it finishes.
+        subprocess.run(["systemd-run", "--user", "--collect", "--unit", "amh-release-vl",
+                        "--working-directory", "/ssd1/sichangheagent/agent_managers", "bash", "-c", script],
+                       capture_output=True, timeout=60)
         tell_both("Midas Claude quota back: VL experiments resuming",
                   f"Midas quota has reset: Claude is on Midas again; releasing {len(held)} held VL experiment agents, about 2 a minute ({', '.join(held) or 'none'}).")
 
