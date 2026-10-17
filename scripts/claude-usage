@@ -38,8 +38,16 @@ FIELDS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_token
 
 
 def org_name():
-    account = json.loads((HOME / ".claude.json").read_text()).get("oauthAccount") or {}
-    return account.get("organizationName") or "unknown"
+    """The token's organization; `~/.claude.json` can hold a stale name that running sessions write back."""
+    token = json.loads((HOME / ".claude/.credentials.json").read_text())["claudeAiOauth"]["accessToken"]
+    request = urllib.request.Request(
+        "https://api.anthropic.com/api/oauth/profile",
+        headers={"Authorization": "Bearer " + token, "anthropic-beta": "oauth-2025-04-20", "User-Agent": "claude-usage"},
+    )
+    try:
+        return (json.load(urllib.request.urlopen(request, timeout=30)).get("organization") or {}).get("name") or "unknown"
+    except Exception:
+        return "unknown"
 
 
 def quota():

@@ -16,6 +16,7 @@ import json
 import os
 import shutil
 import sys
+import urllib.request
 from pathlib import Path
 
 HOME = Path.home()
@@ -26,7 +27,16 @@ NAMES = {"Midas": "midas", "stevensichanghe@gmail.com's Organization": "personal
 
 
 def active_org():
-    return (json.loads(CONFIG.read_text()).get("oauthAccount") or {}).get("organizationName", "unknown")
+    """The token's organization; `~/.claude.json` can hold a stale name that running sessions write back."""
+    token = json.loads(CREDENTIALS.read_text())["claudeAiOauth"]["accessToken"]
+    request = urllib.request.Request(
+        "https://api.anthropic.com/api/oauth/profile",
+        headers={"Authorization": "Bearer " + token, "anthropic-beta": "oauth-2025-04-20", "User-Agent": "claude-account"},
+    )
+    try:
+        return (json.load(urllib.request.urlopen(request, timeout=30)).get("organization") or {}).get("name") or "unknown"
+    except Exception:
+        return "unknown"
 
 
 def replace(path, text):
@@ -42,7 +52,9 @@ def save(name):
     os.chmod(SAVED, 0o700)
     os.chmod(folder, 0o700)
     shutil.copy2(CREDENTIALS, folder / "credentials.json")
-    replace(folder / "oauthAccount.json", json.dumps(json.loads(CONFIG.read_text())["oauthAccount"]))
+    # The account record in ~/.claude.json may be stale, so keep the one saved at login.
+    if not (folder / "oauthAccount.json").exists():
+        replace(folder / "oauthAccount.json", json.dumps(json.loads(CONFIG.read_text())["oauthAccount"]))
 
 
 def use(name):

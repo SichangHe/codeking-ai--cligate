@@ -12,8 +12,10 @@ agreed to go back:
 1. `claude-account` shows the active organization and saved names.
 2. `claude-account use personal` saves the Midas login under `midas` and
    makes the personal one active.
-3. Check: `claude auth status` shows `"orgName": "stevensichanghe@gmail.com's Organization"`
-   and `"subscriptionType": "max"`; `claude-usage` shows the personal quota.
+3. Check: `claude-account` prints `active organization: stevensichanghe@gmail.com's Organization`
+   (it asks Anthropic which org the token belongs to; the name in
+   `~/.claude.json` and `claude auth status` can be stale), and
+   `claude-usage` shows the personal quota.
 4. Agents started afterwards use the personal login. Running agents keep
    their old login until they restart; restart them through `amh`, at most
    2 per minute, only if they are stuck on a quota error.
@@ -21,8 +23,8 @@ agreed to go back:
 
 `claude-account use midas` switches back to Midas the same way.
 
-If `claude auth status` shows `loggedIn: false` after a switch, the saved
-login expired: switch back with `claude-account use midas` and tell the human
+If `claude-account` prints `active organization: unknown` after a switch,
+the saved login expired (running sessions may have renewed it elsewhere): switch back with `claude-account use midas` and tell the human
 a fresh `claude auth login` is needed. Never print or copy the token files
 anywhere else.
 
