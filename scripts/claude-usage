@@ -1,0 +1,120 @@
+#!/usr/bin/env python3
+"""Track how much of the Claude subscription quota the local agents use.
+
+`--record` (run by the claude-usage timer) asks Anthropic for the logged-in
+organization's quota use, which spends no quota, and appends it to
+`claude-usage.jsonl` in the state folder. It also adds the tokens in Claude Code
+transcripts written since the last run to per-day, per-model totals in
+`claude-usage-tokens.json`.
+
+Without options it prints the organization, percent used of the 5-hour and
+7-day windows with their resets, and the token totals of the last 7 days.
+Never prints a token or an email address.
+"""
+import argparse
+import json
+import sys
+import time
+import urllib.request
+from datetime import datetime
+from pathlib import Path
+
+HOME = Path.home()
+STATE = HOME / ".local/state"
+LOG = STATE / "claude-usage.jsonl"
+TOKENS = STATE / "claude-usage-tokens.json"
+PROJECTS = HOME / ".claude/projects"
+FIELDS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
+
+
+def org_name():
+    account = json.loads((HOME / ".claude.json").read_text()).get("oauthAccount") or {}
+    return account.get("organizationName") or "unknown"
+
+
+def quota():
+    token = json.loads((HOME / ".claude/.credentials.json").read_text())["claudeAiOauth"]["accessToken"]
+    request = urllib.request.Request(
+        "https://api.anthropic.com/api/oauth/usage",
+        headers={"Authorization": "Bearer " + token, "anthropic-beta": "oauth-2025-04-20", "User-Agent": "claude-usage"},
+    )
+    data = json.load(urllib.request.urlopen(request, timeout=30))
+    windows = {}
+    for name in ("five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet"):
+        if data.get(name):
+            windows[name] = {"percent": data[name].get("utilization"), "resets_at": data[name].get("resets_at")}
+    return windows
+
+
+def add_tokens():
+    """Add usage from transcript lines written since the last run; each response counts once."""
+    state = json.loads(TOKENS.read_text()) if TOKENS.exists() else {"offsets": {}, "days": {}, "seen": []}
+    seen = set(state["seen"])
+    for path in PROJECTS.glob("**/*.jsonl"):
+        key = str(path)
+        size = path.stat().st_size
+        start = state["offsets"].get(key, 0)
+        if size <= start:
+            state["offsets"][key] = min(start, size)
+            continue
+        with path.open("rb") as handle:
+            handle.seek(start)
+            chunk = handle.read(size - start)
+        complete = chunk.rfind(b"\n") + 1
+        state["offsets"][key] = start + complete
+        for line in chunk[:complete].splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            message = row.get("message") if isinstance(row, dict) else None
+            usage = message.get("usage") if isinstance(message, dict) else None
+            ident = message.get("id") if isinstance(message, dict) else None
+            if not usage or not ident or ident in seen:
+                continue
+            seen.add(ident)
+            try:
+                day = datetime.fromisoformat(row["timestamp"].replace("Z", "+00:00")).astimezone().strftime("%Y-%m-%d")
+            except (KeyError, ValueError, AttributeError):
+                day = datetime.now().strftime("%Y-%m-%d")
+            bucket = state["days"].setdefault(day, {}).setdefault(message.get("model") or "unknown", dict.fromkeys(FIELDS, 0))
+            for field in FIELDS:
+                bucket[field] += usage.get(field) or 0
+    state["seen"] = list(seen)[-200000:]
+    cutoff = time.strftime("%Y-%m-%d", time.localtime(time.time() - 90 * 86400))
+    state["days"] = {day: models for day, models in state["days"].items() if day >= cutoff}
+    TOKENS.write_text(json.dumps(state))
+    return state["days"]
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--record", action="store_true", help="log the quota and add new transcript tokens")
+    args = parser.parse_args()
+    STATE.mkdir(parents=True, exist_ok=True)
+    if args.record:
+        entry = {"at": datetime.now().astimezone().isoformat(timespec="seconds"), "org": org_name()}
+        try:
+            entry["windows"] = quota()
+        except Exception as error:
+            entry["error"] = type(error).__name__
+        with LOG.open("a") as handle:
+            handle.write(json.dumps(entry) + "\n")
+        add_tokens()
+        return 0 if "windows" in entry else 2
+    print("organization:", org_name())
+    try:
+        for name, window in quota().items():
+            print(f"{name}: {window['percent']}% used, resets {window['resets_at']}")
+    except Exception as error:
+        print("quota: unavailable,", type(error).__name__)
+    days = json.loads(TOKENS.read_text())["days"] if TOKENS.exists() else {}
+    for day in sorted(days)[-7:]:
+        for model, bucket in sorted(days[day].items()):
+            total = sum(bucket.values())
+            print(f"{day} {model}: {total / 1e6:.1f}M tokens (output {bucket['output_tokens'] / 1e6:.2f}M, cache read {bucket['cache_read_input_tokens'] / 1e6:.1f}M)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
