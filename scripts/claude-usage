@@ -97,7 +97,7 @@ def main():
         try:
             entry["windows"] = quota()
         except Exception as error:
-            entry["error"] = type(error).__name__
+            entry["error"] = f"{type(error).__name__} {getattr(error, 'code', '')}".strip()
         with LOG.open("a") as handle:
             handle.write(json.dumps(entry) + "\n")
         add_tokens()
