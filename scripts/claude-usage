@@ -11,6 +11,12 @@ When a window of the active organization reaches 100% or is locked, `--record`
 saves an evidence bundle for management once per window, in
 `~/claude_quota_evidence/ORG-DATE/`, and tells the human where it is.
 
+🧑 "Make it s.t. it uses the company account while available, and pause VL
+experiments when not and switch to personal": while Midas is active and a
+window is used up, `--record` holds the Claude VL experiment agents (`amh agent
+hold`) and switches to the personal login; once that window's reset time has
+passed it switches back to Midas and releases them. State: `claude-account-policy.json`.
+
 Switching logins: `claude-account`; see docs/claude/claude-account-and-usage.md.
 
 Without options it prints the organization, percent used of the 5-hour and
@@ -158,6 +164,67 @@ def collect_evidence(org, windows, state):
     return folder
 
 
+POLICY = STATE / "claude-account-policy.json"
+AMH = str(HOME / ".config/bin/amh")
+ACCOUNT = str(HOME / "src/cligate-quota/scripts/claude-account")
+COMPANY, PERSONAL = "Midas", "stevensichanghe@gmail.com's Organization"
+
+
+def amh(*args):
+    return subprocess.run([AMH, *args, "--task-file", "amh_support_codex.md"], cwd="/ssd1/sichangheagent/agent_managers",
+                          capture_output=True, text=True, timeout=300)
+
+
+def vl_experiments():
+    """Active VL tasks run by Claude that are not managers: they spend the Claude quota and can wait."""
+    found = []
+    for path in sorted(WORK_LOGS.glob("vl_*.md")):
+        head = dict(line.split(": ", 1) for line in path.read_text(errors="replace").split("\n---", 1)[0].splitlines() if ": " in line)
+        if head.get("tool") == "claude" and head.get("status") in ("running", "long_running") and head.get("is_manager") != "true":
+            found.append(path.name)
+    return found
+
+
+def tell_both(subject, text):
+    amh("tell", "human", "--subject", subject, text)
+    amh("tell", "manager", text)
+
+
+def apply_policy(entry):
+    """Midas while it has quota; when it runs out, hold the VL experiments and use the personal login until the reset."""
+    policy = json.loads(POLICY.read_text()) if POLICY.exists() else {}
+    windows = entry.get("windows") or {}
+    full = [w for name, w in windows.items() if name != "raw" and ((w["percent"] or 0) >= 100 or w["locked"])]
+    if entry["org"] == COMPANY and full and not policy.get("company_out_until"):
+        until = max((w["resets_at"] or "") for w in full) or None
+        held = [task for task in vl_experiments() if amh("agent", "hold", task, "--reason", "Midas Claude quota is used up; waits for its reset").returncode == 0]
+        subprocess.run([ACCOUNT, "use", "personal"], capture_output=True, timeout=120)
+        policy = {"company_out_until": until, "held": held}
+        POLICY.write_text(json.dumps(policy))
+        tell_both("Midas Claude quota used up: VL experiments paused, personal login on",
+                  f"Midas quota is used up until {until}. Held {len(held)} Claude VL experiment agents ({', '.join(held) or 'none'}) and switched Claude to the personal login. Midas comes back and they resume automatically after the reset.")
+    elif policy.get("company_out_until") and entry["org"] != COMPANY:
+        if datetime.now().astimezone() < datetime.fromisoformat(policy["company_out_until"]):
+            return
+        subprocess.run([ACCOUNT, "use", "midas"], capture_output=True, timeout=120)
+        if org_name() != COMPANY:
+            subprocess.run([ACCOUNT, "use", "personal"], capture_output=True, timeout=120)
+            if not policy.get("told_login"):
+                policy["told_login"] = True
+                POLICY.write_text(json.dumps(policy))
+                tell_both("Midas login expired: please log in again",
+                          "Midas quota has reset, but the saved Midas login no longer works, so Claude stays on personal and the VL experiments stay held. Run `claude auth login`, pick Midas, then `claude-account save midas`.")
+            return
+        held = policy.get("held", [])
+        POLICY.unlink()
+        # Releasing wakes each agent, at most 2 starts a minute, so it runs on after this reading.
+        script = "; ".join(f"{AMH} agent release {task} --task-file amh_support_codex.md" for task in held) or "true"
+        subprocess.Popen(["bash", "-c", script], cwd="/ssd1/sichangheagent/agent_managers", start_new_session=True,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        tell_both("Midas Claude quota back: VL experiments resuming",
+                  f"Midas quota has reset: Claude is on Midas again; releasing {len(held)} held VL experiment agents, about 2 a minute ({', '.join(held) or 'none'}).")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--record", action="store_true", help="log the quota and add new transcript tokens")
@@ -177,6 +244,7 @@ def main():
                                 "--subject", f"Claude quota of {entry['org']} ran out: evidence saved",
                                 f"Evidence bundle for management: {folder} (summary.md first)."],
                                cwd="/ssd1/sichangheagent/agent_managers", timeout=120)
+            apply_policy(entry)
             entry["windows"].pop("raw")
         with LOG.open("a") as handle:
             handle.write(json.dumps(entry) + "\n")
