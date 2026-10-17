@@ -203,18 +203,20 @@ def apply_policy(entry):
         POLICY.write_text(json.dumps(policy))
         tell_both("Midas Claude quota used up: VL experiments paused, personal login on",
                   f"Midas quota is used up until {until}. Held {len(held)} Claude VL experiment agents ({', '.join(held) or 'none'}) and switched Claude to the personal login. Midas comes back and they resume automatically after the reset.")
-    elif policy.get("company_out_until") and entry["org"] != COMPANY:
-        if datetime.now().astimezone() < datetime.fromisoformat(policy["company_out_until"]):
-            return
-        subprocess.run([ACCOUNT, "use", "midas"], capture_output=True, timeout=120)
-        if org_name() != COMPANY:
-            subprocess.run([ACCOUNT, "use", "personal"], capture_output=True, timeout=120)
-            if not policy.get("told_login"):
-                policy["told_login"] = True
-                POLICY.write_text(json.dumps(policy))
-                tell_both("Midas login expired: please log in again",
-                          "Midas quota has reset, but the saved Midas login no longer works, so Claude stays on personal and the VL experiments stay held. Run `claude auth login`, pick Midas, then `claude-account save midas`.")
-            return
+    elif policy.get("company_out_until") and not (entry["org"] == COMPANY and full):
+        # Someone may have switched back to Midas already (a fresh login); then only release.
+        if entry["org"] != COMPANY:
+            if datetime.now().astimezone() < datetime.fromisoformat(policy["company_out_until"]):
+                return
+            subprocess.run([ACCOUNT, "use", "midas"], capture_output=True, timeout=120)
+            if org_name() != COMPANY:
+                subprocess.run([ACCOUNT, "use", "personal"], capture_output=True, timeout=120)
+                if not policy.get("told_login"):
+                    policy["told_login"] = True
+                    POLICY.write_text(json.dumps(policy))
+                    tell_both("Midas login expired: please log in again",
+                              "Midas quota has reset, but the saved Midas login no longer works, so Claude stays on personal and the VL experiments stay held. Run `claude auth login`, pick Midas, then `claude-account save midas`.")
+                return
         held = policy.get("held", [])
         POLICY.unlink()
         # Releasing wakes each agent, at most 2 starts a minute, so it runs on after this reading.
