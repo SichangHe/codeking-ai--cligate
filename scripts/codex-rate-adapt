@@ -48,7 +48,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--minutes", type=int, default=10)
     parser.add_argument("--min-rate", type=float, default=5)
-    parser.add_argument("--max-rate", type=float, default=60)
+    parser.add_argument("--max-rate", type=float, default=300)
     parser.add_argument("--increase", type=float, default=1.05)
     parser.add_argument("--decrease", type=float, default=.80)
     parser.add_argument("--print", action="store_true")
