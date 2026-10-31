@@ -1,4 +1,5 @@
 # Claude account switching and usage tracking
+(authored by agents unless marked 🧑)
 
 Every Claude agent on this machine shares one Claude Code login. Two logins
 are saved: `midas` (the Midas team org, Max 5x seat) and `personal` (the
@@ -10,9 +11,23 @@ human's own org, Max 20x).
 (`ANTHROPIC_BASE_URL=http://127.0.0.1:18318`). The proxy holds both logins in
 `~/.local/share/cliproxyapi-trial/auths/claude-*.json`: Midas has `priority`
 10, personal 0, and session affinity keeps a session on one login until it
-runs out. While this is on, the `claude-usage` timer only records and does not
-pause agents or switch logins. To undo, remove the two `ANTHROPIC_*` entries
+runs out. While this is on, the `claude-usage` timer records usage and tells
+`vl_catchup.md` when the monitored Midas quota becomes exhausted/locked or
+available again. It does not pause agents or switch logins. To undo, remove the two `ANTHROPIC_*` entries
 from `env` in `~/.claude/settings.json`.
+
+October 31 verification: both proxy credentials authenticate. Midas reports
+`default_claude_max_5x`; personal reports `default_claude_max_20x`. Personal
+fallback is enabled, with the priorities above. The older saved logins under
+`~/.local/state/claude-accounts/` return HTTP 401; do not use those copies to
+replace the working proxy credentials. Renew a saved login before switching
+outside the proxy.
+
+VL owners retain experiment holds. The proxy cannot distinguish experiments
+from steering or writing; enabling fallback does not authorize resuming held
+experiments.
+The quota notification reports provider availability, not which account billed
+an individual proxy request.
 
 ## switch back to personal (for a Codex agent, without the proxy)
 
@@ -45,3 +60,7 @@ anywhere else.
 - The `claude-usage.timer` (every 10 minutes) appends readings to
   `~/.local/state/claude-usage.jsonl` and adds new transcript tokens to
   `~/.local/state/claude-usage-tokens.json`, also counted per org.
+- The provider reports utilization percentages, not a fixed token allowance.
+- Exhaustion evidence collection is disabled in the recording path.
+  - 🧑 "We no longer need to save evidence for the quota running out, just do the switch normally."
+  - source: human, `manager_mail/zulip-632586785.txt`

@@ -5,6 +5,8 @@
 
 Implemented October 31 in `~/.local/state/codex-reset-once/redeem.py`: removed the usage query and minimum-usage check. Updated its README and removed obsolete `min_used` from the historical target. Offline execution verified consumption without a usage query, unavailable-credit handling, failure retry status, and expired-target handling. No live redemption performed.
 
+Updated the displayed `~/.local/state/codex-quota-goal` instruction too: replaced the obsolete "Agents never trigger a reset" addition with the human's October 31 correction and the authorized deadline schedule.
+
 Fresh provider `rate-limit-reset-credits` responses on October 31:
 
 - `team@trymidas.ai`: `"status": "available"`, `"expires_at": "2026-11-06T23:23:57.989092Z"`

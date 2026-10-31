@@ -7,9 +7,7 @@ organization's quota use, which spends no quota, and appends it to
 transcripts written since the last run to per-day, per-model totals in
 `claude-usage-tokens.json`.
 
-When a window of the active organization reaches 100% or is locked, `--record`
-saves an evidence bundle for management once per window, in
-`~/claude_quota_evidence/ORG-DATE/`, and tells the human where it is.
+`--record` no longer collects exhaustion evidence, per the human's later instruction.
 
 🧑 "Make it s.t. it uses the company account while available, and pause VL
 experiments when not and switch to personal": while Midas is active and a
@@ -192,12 +190,24 @@ def tell_both(subject, text):
 
 def apply_policy(entry):
     """Midas while it has quota; when it runs out, hold the VL experiments and use the personal login until the reset."""
-    # Through the proxy, Claude agents fall back to the personal login by themselves.
-    if json.loads((HOME / ".claude/settings.json").read_text()).get("env", {}).get("ANTHROPIC_BASE_URL"):
-        return
     policy = json.loads(POLICY.read_text()) if POLICY.exists() else {}
     windows = entry.get("windows") or {}
     full = [w for name, w in windows.items() if name != "raw" and ((w["percent"] or 0) >= 100 or w["locked"])]
+    if json.loads((HOME / ".claude/settings.json").read_text()).get("env", {}).get("ANTHROPIC_BASE_URL"):
+        if entry["org"] != COMPANY:
+            return
+        unavailable = bool(full)
+        if unavailable == policy.get("proxy_company_unavailable", False):
+            return
+        text = ("Midas provider quota is exhausted or locked. Personal proxy fallback is enabled; enforce the existing VL experiment account restrictions."
+                if unavailable else "Midas provider quota is available again. VL owners retain all experiment resume decisions.")
+        result = subprocess.run([AMH, "tell", "agent", "vl_catchup.md", "--task-file", "quota_support.md", text],
+                                capture_output=True, text=True, timeout=30)
+        if result.returncode:
+            raise RuntimeError("Could not notify VL owner of Midas quota transition")
+        policy["proxy_company_unavailable"] = unavailable
+        POLICY.write_text(json.dumps(policy))
+        return
     if entry["org"] == COMPANY and full and not policy.get("company_out_until"):
         until = max((w["resets_at"] or "") for w in full) or None
         held = [task for task in vl_experiments() if amh("agent", "hold", task, "--reason", "Midas Claude quota is used up; waits for its reset").returncode == 0]

@@ -1,0 +1,51 @@
+# Inherited quota requests, October 31
+(authored by agents unless marked 🧑)
+
+- Claude-only writing/management requests (#63, #85) were superseded
+  - 🧑 "Allow Astra to message me, and shift management work from Claude to it"
+  - source: human request retained in `main_manager_agy.md` and October 24 comment in AMH config
+  - live config: `writers = "claude,codex:astra"`, manager `tools = "claude,codex"`
+- proxy and monitoring requests (#72, #98, #100, #101) implemented
+  - Claude base URL is local proxy port 18318; `session-affinity: true`
+  - Midas enabled, priority 10; personal enabled, priority 0
+  - both provider credentials authenticated October 31
+  - enabled `claude-usage.timer` records utilization and transcript totals
+- team quota question (#74) answered by current provider profile
+  - `"rate_limit_tier": "default_claude_max_5x"`
+  - personal profile: `"rate_limit_tier": "default_claude_max_20x"`
+  - latest observed Midas utilization: 75% five-hour, 29% weekly
+  - reset times: October 31 11:10 PDT and November 2 02:00 PST
+  - provider returns no fixed token allowance
+- switching instructions (#76) updated in `claude-account-and-usage.md`
+  - proxy credentials work; old non-proxy saved credentials return HTTP 401
+  - proxy fallback is enabled without replacing working credentials
+- exhaustion evidence (#77, #113) cancelled by later human instruction
+  - 🧑 "We no longer need to save evidence for the quota running out, just do the switch normally."
+  - source: `manager_mail/zulip-632586785.txt`
+  - `claude-usage` recording path does not call the old evidence helper
+- company-first routing and experiment holds (#87) implemented with VL ownership
+  - proxy falls back to enabled personal account; no live exhaustion induced
+  - existing timer notifies VL owner on observed Midas exhaustion/lock and recovery
+  - owner: "Yes, VL ownership includes pausing company-account-dependent experiments when Midas unavailable; fallback routing alone is not experiment authorization. Held Paxos/Anvil remain held."
+  - source: `vl_catchup.md`, October 31 direct AMH reply
+- experiment/porting/batching requests (#78, #80, #91) remain with VL owner
+  - owner: "Confirmed VL porting/batching/experiment ownership stays here; historical requests remain in my queue and are not claimed completed."
+  - source: `vl_catchup.md`, October 31 direct AMH reply
+  - close only redundant support routing; experiments are not claimed completed
+- old Claude experiment parallelism request (#79) superseded by model instruction
+  - 🧑 "When Claude Midas come back, don't use it to do experiments, use only Codex for now. Save Claude for manager/steering and other use"
+  - source: `manager_mail/zulip-632921988.txt`
+  - October 16 historical probe: `N=64 failures=0 median=12s max=13s`
+  - source: `~/amh_support_scratch/claude_parallelism_20261016/summary.txt`
+  - this establishes neither an upper limit nor today's safe concurrency
+- many-Claude-agents question (#90)
+  - historical request approved batching in `manager_mail/zulip-632548924.txt`
+  - current VL owner confirms only two Claude workers: implementation/public-tool validation and metadata selection
+  - EWD proof construction uses Codex under `phd_labs`; no evidence proves the former agent count optimal
+- useful-capacity coordination (#75, main manager #98) delivered to existing managers
+  - main manager, VL owner, research owner received current capacity and reset times
+  - VL confirms useful Claude workers `vl_tdb_impl` and `vl_tdb_select`; held experiments stay held
+- Fable exclusion (#114) retained
+  - 🧑 "Also, don't use Fable."
+  - source: `manager_mail/zulip-632586961.txt`
+  - configured Claude launch model remains Opus; quota support started no Fable jobs
