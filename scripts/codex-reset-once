@@ -1,0 +1,45 @@
+"""Redeem one authorized Codex reset credit before it expires, regardless of usage.
+
+Human, Oct 31: "Of course you should use the reset regardless of the usage.
+The 99% usage is a target to achieve not a restricting factor for whether to use the reset."
+"""
+import importlib.machinery, importlib.util, json, os, subprocess, sys, uuid
+from datetime import datetime, timezone
+
+HOME = os.path.expanduser("~")
+AMH = os.path.join(HOME, ".config/bin/amh")
+here = os.path.join(HOME, ".local/state/codex-reset-once")
+l = importlib.machinery.SourceFileLoader("w", os.path.join(HOME, "src/cligate-quota/scripts/codex-reset-watch"))
+s = importlib.util.spec_from_loader("w", l); w = importlib.util.module_from_spec(s); l.exec_module(w)
+t = json.load(open(sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, "target.json")))
+label = t.get("label", "the account")
+
+
+failed = False
+try:
+    if datetime.now(timezone.utc) >= datetime.fromisoformat(t["expires"].replace("Z", "+00:00")):
+        print("Reset deadline passed; no redemption attempted.")
+        try:
+            subprocess.run([AMH, "tell", "manager", "--task-file", "quota_support.md", f"Reset deadline passed for {label}; verify provider history immediately. No further attempt made."], timeout=5)
+        except subprocess.TimeoutExpired:
+            print("Notification timed out; deadline recorded in service journal.")
+        raise SystemExit(0)
+    ok = [c for c in w.provider(t["auth"], "rate-limit-reset-credits")["credits"] if c["id"] == t["credit"] and c["status"] == "available"]
+    if not ok:
+        text = f"Codex reset ({label}): the credit expiring {t['expires'][:16]}Z was no longer available; nothing redeemed."
+    else:
+        # 🧑 "Of course you should use the reset regardless of the usage."
+        answer = w.provider(t["auth"], "rate-limit-reset-credits/consume", {"credit_id": t["credit"], "redeem_request_id": str(uuid.uuid5(uuid.NAMESPACE_URL, t["credit"]))})
+        remaining = w.provider(t["auth"], "rate-limit-reset-credits")["credits"]
+        if any(c["id"] == t["credit"] and c["status"] == "available" for c in remaining):
+            raise RuntimeError("Provider still reports the target credit available after redemption")
+        text = f"Codex reset ({label}): redeemed the credit expiring {t['expires'][:16]}Z. Provider answer: {json.dumps(answer)[:200]}"
+except Exception as error:
+    failed = True
+    text = f"Codex reset ({label}): redeeming FAILED: {error}. Expires {t['expires'][:16]}Z; redeem by hand now."
+print(text)
+try:
+    subprocess.run([AMH, "tell", "manager", "--task-file", "quota_support.md", text], timeout=5)
+except subprocess.TimeoutExpired:
+    print("Notification timed out; provider result retained in service journal.")
+raise SystemExit(1 if failed else 0)

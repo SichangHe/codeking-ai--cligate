@@ -1,0 +1,10 @@
+[Unit]
+Description=Redeem authorized Codex reset credit %i before expiry
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/.local/state/codex-reset-once/redeem.py %h/.local/state/codex-reset-once/%i.json
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=180s
