@@ -1,0 +1,96 @@
+#!/usr/bin/env python3
+"""Rank enabled Claude/Codex credentials by their next usable quota reset."""
+import argparse
+import json
+import time
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+from pathlib import Path
+
+ROOT = Path.home() / '.local/share/cliproxyapi-trial'
+URL = 'http://127.0.0.1:18317/v0/management'
+
+
+def request(url, headers, data=None):
+    """Read JSON, optionally PATCHing fields; credentials never enter logs."""
+    body = None if data is None else json.dumps(data).encode()
+    req = urllib.request.Request(url, data=body, headers=headers,
+                                 method='GET' if data is None else 'PATCH')
+    with urllib.request.urlopen(req, timeout=20) as response:
+        return json.load(response)
+
+
+def quota_windows(account):
+    """Fetch read-only provider usage; return reset epochs and used percentages."""
+    try:
+        login = json.loads(Path(account['path']).read_text())
+        headers = {'Authorization': 'Bearer ' + login['access_token']}
+        if account['provider'] == 'codex':
+            headers.update({'chatgpt-account-id': login.get('account_id', ''),
+                            'User-Agent': 'codex_cli_rs'})
+            usage = request('https://chatgpt.com/backend-api/wham/usage', headers)
+            now = time.time()
+            return [(float(w.get('reset_at') or now + w['reset_after_seconds']),
+                     float(w['used_percent']))
+                    for w in (usage.get('rate_limit') or {}).values()
+                    if isinstance(w, dict) and w.get('limit_window_seconds')]
+        headers['anthropic-beta'] = 'oauth-2025-04-20'
+        usage = request('https://api.anthropic.com/api/oauth/usage', headers)
+        return [(datetime.fromisoformat(usage[name]['resets_at'].replace('Z', '+00:00')).timestamp(),
+                 float(usage[name]['utilization']))
+                for name in ('five_hour', 'seven_day')
+                if usage.get(name) and usage[name].get('resets_at')]
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+
+
+# 🧑 "Let the proxy agent make the proxy automatically prioritize accounts that would reset first"
+def priorities(accounts, windows, now):
+    """Prefer usable known resets, then unknown, then exhausted accounts per provider."""
+    result = {}
+    for provider in ('claude', 'codex'):
+        if any(not samples for account, samples in zip(accounts, windows)
+               if account['provider'] == provider):
+            continue
+        rows = []
+        for account, samples in zip(accounts, windows):
+            if account['provider'] != provider:
+                continue
+            future = [(reset, used) for reset, used in samples if reset > now]
+            exhausted = any(used >= 100 for _, used in future)
+            category = 2 if exhausted else 0 if future else 1
+            # Rank by the longest window's reset: unused short-window (5h) capacity
+            # is not lost while the weekly window binds, so a 5h reset must not
+            # outrank another account's earlier weekly reset.
+            reset = max((reset for reset, _ in future), default=float('inf'))
+            rows.append(((category, reset), account['name']))
+        ranks = {key: len(rows) - index for index, key in enumerate(sorted({key for key, _ in rows}))}
+        result.update({name: ranks[key] for key, name in rows})
+    return result
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--apply', action='store_true')
+    args = parser.parse_args()
+    headers = {'Authorization': 'Bearer ' + (ROOT / 'management-key').read_text().strip(),
+               'Content-Type': 'application/json'}
+    accounts = [a for a in request(URL + '/auth-files', headers)['files']
+                if a.get('provider') in ('claude', 'codex') and not a.get('disabled')]
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        windows = list(pool.map(quota_windows, accounts))
+    desired = priorities(accounts, windows, time.time())
+    for index, account in enumerate(accounts):
+        if account['name'] not in desired:
+            print(f"{account['provider']} account {index}: quota incomplete; retaining priority")
+            continue
+        priority = desired[account['name']]
+        if args.apply and account.get('priority') != priority:
+            request(URL + '/auth-files/fields', headers,
+                    {'name': account['name'], 'priority': priority})
+        print(f"{account['provider']} account {index}: priority={priority}, windows={windows[index]}")
+
+
+if __name__ == '__main__':
+    main()
