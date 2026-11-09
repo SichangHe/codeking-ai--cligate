@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-"""Warn when Codex requests fail or wait long at the throttle, or the quota budget is off.
+"""Warn when Codex requests fail or wait long at the throttle.
 
 Run from a timer. Reads the proxy's main log for `429` replies that reached a
-client, the journal of `codex-throttle` for how long requests waited for their
-turn, and `codex-quota --json` for the projected use of each account's quota
-window. The throttle caps the rate that reaches the provider, so long waits,
+client and the journal of `codex-throttle` for how long requests waited for their
+turn. The throttle caps the rate that reaches the provider, so long waits,
 not the rate, show that more agents ask than it lets through. Sends each kind of warning with
-`amh tell manager`, a rate warning at most once per `--quiet-min` and a budget
-warning once per `--budget-quiet-min`; `--print` prints instead of sending.
+`amh tell manager`, at most once per `--quiet-min`; `--print` prints instead of sending.
+The quota budget part moved into `amh quota serve` (agent_managers/docs/quota-manager.md).
 
 Observed on 2026-10-12: no refusal at 13 to 33 requests per minute, refusals at 63 to 66.
 """
@@ -27,6 +26,8 @@ LOG = Path(os.environ.get("CLIPROXYAPI_MAIN_LOG", HOME / ".local/share/cliproxya
 STATE = Path(os.environ.get("XDG_STATE_HOME", HOME / ".local/state")) / "codex-load-watch.json"
 REQUEST = re.compile(r'^\[(\d{4}-\d\d-\d\d \d\d:\d\d):\d\d\] .*gin_logger\.go:\d+\] (\d{3}) \|.*POST +"/v1/responses"')
 TAIL_BYTES = 2_000_000
+TELL_MAX_CHARS = 500
+"""`amh tell manager` refuses over 600 characters ("write details to a file and name its path"); longer warnings go to a file."""
 
 
 def load(minutes: int) -> tuple[Counter[str], int]:
@@ -51,9 +52,7 @@ def main() -> int:
     parser.add_argument("--task-file", default="amh_support_codex.md", help="the task the warning is sent from")
     parser.add_argument("--minutes", type=int, default=10, help="how far back to count requests")
     parser.add_argument("--long-wait-s", type=float, default=30, help="mean wait at the throttle that counts as long")
-    parser.add_argument("--under-percent", type=int, default=70, help="mean projected use at reset below which the budget is under-used")
     parser.add_argument("--quiet-min", type=float, default=60, help="minutes before the same kind of rate warning is sent again")
-    parser.add_argument("--budget-quiet-min", type=float, default=360, help="minutes before the same kind of budget warning is sent again")
     parser.add_argument("--print", action="store_true", help="print the readings and warnings; send nothing")
     args = parser.parse_args()
     per_minute, n_refused = load(args.minutes)
@@ -66,23 +65,13 @@ def main() -> int:
     )
     waits_s = [float(found[1]) for found in re.finditer(r"held a request ([\d.]+) s", journal.stdout)]
     mean_wait_s = sum(waits_s) / len(waits_s) if waits_s else 0.0
-    quota = subprocess.run([Path(__file__).with_name("codex-quota"), "--json"], capture_output=True, text=True, timeout=60)
-    summary = json.loads(quota.stdout) if quota.stdout.strip() else {"exit": 2, "verdict": quota.stderr.strip(), "accounts": []}
-    if summary["exit"] == 2:
-        print(f"codex-load-watch: no quota reading: {summary['verdict']}", file=sys.stderr)
-    projected = [row["projected_at_reset"] for row in summary["accounts"] if "projected_at_reset" in row]
-    mean_projected = sum(projected) / len(projected) if projected else None
     warnings = {}
     if n_refused:
         warnings["refused"] = f"Codex proxy: {n_refused} request(s) failed with 429 for clients in the last {args.minutes} min; peak {peak} requests per minute at {peak_minute[-5:]}."
     elif mean_wait_s >= args.long_wait_s:
         warnings["waits"] = f"Codex throttle: requests waited {mean_wait_s:.0f} s on average in the last {args.minutes} min ({peak} per minute let through); adding agents now only lengthens the wait."
-    if summary["exit"] == 1:
-        warnings["over"] = f"Codex quota budget looks over: {summary['verdict']}"
-    elif summary["exit"] == 0 and mean_projected is not None and mean_projected < args.under_percent:
-        warnings["under"] = f"Codex quota budget looks short of being used up: at the present rate the working accounts reach {mean_projected:.0f}% used at reset on average."
     if args.print:
-        print(f"peak {peak}/min at {peak_minute}; mean wait {mean_wait_s:.0f} s; 429 to clients: {n_refused}; quota: {summary['verdict']}; mean projected at reset: {mean_projected}")
+        print(f"peak {peak}/min at {peak_minute}; mean wait {mean_wait_s:.0f} s; 429 to clients: {n_refused}")
         print("\n".join(warnings.values()))
         return 0
     try:
@@ -91,9 +80,12 @@ def main() -> int:
         sent_at = {}
     now_s = time.time()
     for kind, text in warnings.items():
-        quiet_min = args.budget_quiet_min if kind in ("over", "under") else args.quiet_min
-        if now_s - sent_at.get(kind, 0) < quiet_min * 60:
+        if now_s - sent_at.get(kind, 0) < args.quiet_min * 60:
             continue
+        if len(text) > TELL_MAX_CHARS:
+            detail = STATE.with_name(f"codex-load-watch-{kind}.txt")
+            detail.write_text(text + "\n")
+            text = f"{text.splitlines()[0][:300]} Details: {detail}"
         told = subprocess.run(["amh", "tell", "manager", "--task-file", args.task_file, text], capture_output=True, text=True, timeout=120)
         if told.returncode:
             print(f"codex-load-watch: amh tell manager failed: {told.stderr.strip()}", file=sys.stderr)
